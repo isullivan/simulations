@@ -36,7 +36,7 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     xv_test -= x_size_kernel // 2
     yv_test -= y_size_kernel // 2
 
-    kernel_test_maxval = 1.0 / threshold
+    kernel_test_maxval = 1 / threshold
 
     def kernel_profile(x, y, x_offset=0, y_offset=0, kernel_min=1, kernel_max=kernel_test_maxval):
         x_profile = np.clip(abs(np.pi * (xv_test - x_offset)), kernel_min, kernel_max)
@@ -131,22 +131,22 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
 
     """
     if x_low_full > 0:
-        model_img[x_size - x_low_full: x_size, y_low_img: y_high_img] = \
+        model_img[x_size - x_low_full: x_size, y_low_img: y_high_img] += \
             model_img_full[0: x_low_full, y_low_full: y_high_full]
     """
     """
     if y_low_full > 0:
-        model_img[x_low_img: x_high_img, y_size - y_low_full: y_size] = \
+        model_img[x_low_img: x_high_img, y_size - y_low_full: y_size] += \
             model_img_full[x_low_full: x_high_full, 0: y_low_full]
     """
     """
     if x_high_full < x_size:
-        model_img[0: x_size_full - x_high_full - 1, y_low_img: y_high_img] = \
+        model_img[0: x_size_full - x_high_full - 1, y_low_img: y_high_img] += \
             model_img_full[x_high_full + 1: x_size_full, y_low_full: y_high_full]
     """
     """
     if y_high_full < y_size:
-        model_img[x_low_img: x_high_img, 0: y_size_full - y_high_full - 1] = \
+        model_img[x_low_img: x_high_img, 0: y_size_full - y_high_full - 1] += \
             model_img_full[x_low_full: x_high_full, y_high_full + 1: y_size_full]
     """
     # IMPORTANT: See note near the beginning explaining why we have to take the transpose on output
