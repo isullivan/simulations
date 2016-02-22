@@ -5,10 +5,11 @@ from numpy import real
 # import lsst.afw.table as afwTable
 # import lsst.afw.geom as afwGeom
 from fast_dft import fast_dft
+from true_dft import true_dft
 
 
 def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
-              return_fft=False, pixel_scale=None):
+              return_fft=False, pixel_scale=None, true=True):
     """
     Take a source catalog, bounding box, and psf and construct a simulated image.
     @param[in] catalog source catalog with schema
@@ -37,13 +38,15 @@ def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
     flux = catalog[fluxKey]
     x_size, y_size = bbox.getDimensions()
 
-    source_image = fast_dft(flux, xv, yv, x_size=x_size, y_size=y_size, no_fft=True, threshold=threshold)
-
+    if true:
+        source_image = true_dft(flux, xv, yv, x_size=x_size, y_size=y_size, no_fft=True, threshold=threshold)
+    else:
+        source_image = fast_dft(flux, xv, yv, x_size=x_size, y_size=y_size, no_fft=True, threshold=threshold)
     # return(source_image)
     psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel',
                               nx=x_size, ny=y_size, offset=[0, 0], use_true_center=False)
-    convol = fft2(source_image) * fft2(fftshift(psf_image.array))
+    convol = fft2(source_image) * fft2(psf_image.array)
     if return_fft:
         return(convol)
     else:
-        return(real(ifft2(convol)))
+        return(real(fftshift(ifft2(convol))))

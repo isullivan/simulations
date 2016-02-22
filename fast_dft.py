@@ -49,12 +49,13 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
                    + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=y_size_kernel)
                    + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=-y_size_kernel)
                    )
-    xv_k, yv_k = np.where(kernel_test >= threshold)
+    # pre-compute the indices of the convolution kernel
+    xv_k_i, yv_k_i = np.where(kernel_test >= threshold)
     # print("xv_k:", min(xv_k), max(xv_k), len(xv_k))
     # print("yv_k:", min(yv_k), max(yv_k), len(yv_k))
-    print("Fraction of pixels used:", 100 * len(xv_k) / (x_size_kernel * y_size_kernel))
-    xv_k -= int(round(x_size_kernel / 2.0))
-    yv_k -= int(round(y_size_kernel / 2.0))
+    print("Fraction of pixels used:", 100 * len(xv_k_i) / (x_size_kernel * y_size_kernel))
+    xv_k = xv_k_i - int(round(x_size_kernel / 2.0))
+    yv_k = yv_k_i - int(round(y_size_kernel / 2.0))
 
     x_pix = input_type_check([int(num) for num in np.floor(x_loc)])
     y_pix = input_type_check([int(num) for num in np.floor(y_loc)])
@@ -73,10 +74,10 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     y_size_full = int(np.max(y_pix) + np.max(yv_k) - y0 + 1)
     x_pix -= x0
     y_pix -= y0
-    # print('x0:', x0)
-    # print('y0:', y0)
-    # print('x_size_full:', x_size_full)
-    # print('y_size_full:', y_size_full)
+    print('x0:', x0)
+    print('y0:', y0)
+    print('x_size_full:', x_size_full)
+    print('y_size_full:', y_size_full)
 
     model_img_full = np.zeros((x_size_full, y_size_full), dtype=np.float64)
     xv0 = np.arange(x_size_kernel, dtype=np.float64) - int(round(x_size_kernel / 2.0))
@@ -84,9 +85,6 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     x_sign = np.power(-1.0, xv0)
     y_sign = np.power(-1.0, yv0)
 
-    # pre-compute the indices of the convolution kernel
-    xv_k_i = xv_k + int(round(x_size_kernel / 2.0))
-    yv_k_i = yv_k + int(round(y_size_kernel / 2.0))
     sin_x = np.sin(-pi * dx_arr)
     sin_y = np.sin(-pi * dy_arr)
 
@@ -95,20 +93,26 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
             kernel_x = np.zeros(x_size_kernel, dtype=np.float64)
             kernel_x[x_size_kernel // 2] = 1.0
         else:
+            
             kernel_x = (sin_x[_i] / (pi * (xv0 - dx_arr[_i]))
-                        + sin_x[_i] / (pi * (x_size_kernel + xv0 - dx_arr[_i] + x0))
-                        + sin_x[_i] / (pi * (-x_size_kernel + xv0 - dx_arr[_i] - x0))
+                        + sin_x[_i] / (pi * (x_size_full + xv0 - dx_arr[_i] + x0))
+                        + sin_x[_i] / (pi * (-x_size_full + xv0 - dx_arr[_i] - x0))
                         )
+            
+            # kernel_x = sin_x[_i] / (pi * (xv0 - dx_arr[_i]))
             kernel_x *= x_sign
             # kernel_x /= np.sum(kernel_x)
         if dy_arr[_i] == 0:
             kernel_y = np.zeros(y_size_kernel, dtype=np.float64)
             kernel_y[y_size_kernel // 2] = 1.0
         else:
+            
             kernel_y = (sin_y[_i] / (pi * (yv0 - dy_arr[_i]))
-                        + sin_y[_i] / (pi * (y_size_kernel + yv0 - dy_arr[_i] + y0))
-                        + sin_y[_i] / (pi * (-y_size_kernel + yv0 - dy_arr[_i] - y0))
+                        + sin_y[_i] / (pi * (y_size_full + yv0 - dy_arr[_i] + y0))
+                        + sin_y[_i] / (pi * (-y_size_full + yv0 - dy_arr[_i] - y0))
                         )
+            
+            # kernel_y = sin_y[_i] / (pi * (yv0 - dy_arr[_i]))
             kernel_y *= y_sign
             # kernel_y /= np.sum(kernel_y)
         kernel_single = kernel_x[xv_k_i] * kernel_y[yv_k_i]
@@ -130,30 +134,43 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     # print(y_low_full, y_high_full, y_high_full - y_low_full)
     # print(x0, y0)
 
-    # model_img = np.zeros((y_size, x_size), dtype=np.float64)
-    # [y_low_img:y_high_img, x_low_img:x_high_img] = \
-    model_img = model_img_full[y_low_full:y_high_full, x_low_full:x_high_full]
-    # if x_low_full > 0:
-    full_view = model_img_full[y_low_full: y_high_full, 0: x_low_full]
-    img_view = model_img[y_low_img: y_high_img, x_size - x_low_full: x_size]
-    model_img[y_low_img: y_high_img, x_size - x_low_full: x_size] = \
-        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
-    # if y_low_full > 0:
-    full_view = model_img_full[0: y_low_full, x_low_full: x_high_full]
-    img_view = model_img[y_size - y_low_full: y_size, x_low_img: x_high_img]
-    model_img[y_size - y_low_full: y_size, x_low_img: x_high_img] = \
-        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    model_img = np.zeros((y_size, x_size), dtype=np.float64)
+    model_img[y_low_img:y_high_img, x_low_img:x_high_img] = \
+        model_img_full[y_low_full:y_high_full, x_low_full:x_high_full]
     
-    # if x_high_full < x_size_full:
-    full_view = model_img_full[y_low_full: y_high_full, x_high_full + 1: x_size_full]
-    img_view = model_img[y_low_img: y_high_img, 0: x_size_full - x_high_full - 1]
-    model_img[y_low_img: y_high_img, 0: x_size_full - x_high_full - 1] = \
-        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
-    # if y_high_full < y_size_full:
-    full_view = model_img_full[y_high_full + 1: y_size_full, x_low_full: x_high_full]
-    img_view = model_img[0: y_size_full - y_high_full - 1, x_low_img: x_high_img]
-    model_img[0: y_size_full - y_high_full - 1, x_low_img: x_high_img] = \
-        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    # model_img_full = np.fliplr(np.flipud(model_img_full))
+    if x_low_full > 0:
+        # print("Aliasing x low")
+        full_view = model_img_full[y_low_full: y_high_full, 0: x_low_full]
+        img_view = model_img[y_low_img: y_high_img, x_size - x_low_full: x_size]
+        model_img[y_low_img: y_high_img, x_size - x_low_full: x_size] = \
+            img_view + full_view
+
+        # model_img[y_low_img: y_high_img, x_size - x_low_full: x_size] = \
+        #    np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    
+    if y_low_full > 0:
+        # print("Aliasing y low")
+        full_view = model_img_full[0: y_low_full, x_low_full: x_high_full]
+        img_view = model_img[y_size - y_low_full: y_size, x_low_img: x_high_img]
+        model_img[y_size - y_low_full: y_size, x_low_img: x_high_img] = \
+            full_view + img_view
+        #    np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    
+    if x_high_full < x_size_full:
+        # print("Aliasing x high")
+        full_view = model_img_full[y_low_full: y_high_full, x_high_full: x_size_full]
+        img_view = model_img[y_low_img: y_high_img, 0: x_size_full - x_high_full]
+        model_img[y_low_img: y_high_img, 0: x_size_full - x_high_full] = \
+            full_view + img_view
+        #    np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    if y_high_full < y_size_full:
+        # print("Aliasing y high")
+        full_view = model_img_full[y_high_full: y_size_full, x_low_full: x_high_full]
+        img_view = model_img[0: y_size_full - y_high_full, x_low_img: x_high_img]
+        model_img[0: y_size_full - y_high_full, x_low_img: x_high_img] = \
+            full_view + img_view
+        #    np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
     
     return(model_img)
 
