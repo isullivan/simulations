@@ -28,15 +28,15 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     y_size_kernel = int(y_size * 2)
     if threshold is None:
         threshold = 1.0 / (((2.0 * pi) ** 2.0) * np.max((x_size, y_size)))
-    # print("Threshold used:", threshold)
+    print("Threshold used:", threshold)
 
     # NOTE: appear to need to use 'ij' (matrix) indexing here, which results in a transposed array, then
     #       take transpose of final image at the end. This is confusing and clearly a bug, but it works
-    xv_test, yv_test = np.meshgrid(np.arange(x_size_kernel), np.arange(y_size_kernel), indexing='ij')
+    xv_test, yv_test = np.meshgrid(np.arange(x_size_kernel), np.arange(y_size_kernel), indexing='xy')
     xv_test -= x_size_kernel // 2
     yv_test -= y_size_kernel // 2
 
-    kernel_test_maxval = 1 / threshold
+    kernel_test_maxval = 100.0 / threshold
 
     def kernel_profile(x, y, x_offset=0, y_offset=0, kernel_min=1, kernel_max=kernel_test_maxval):
         x_profile = np.clip(abs(np.pi * (xv_test - x_offset)), kernel_min, kernel_max)
@@ -44,10 +44,10 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
         return(1.0 / (x_profile * y_profile))
 
     kernel_test = (kernel_profile(xv_test, yv_test, x_offset=0, y_offset=0)
-                   + kernel_profile(xv_test, yv_test, x_offset=x_size, y_offset=0)
-                   + kernel_profile(xv_test, yv_test, x_offset=-x_size, y_offset=0)
-                   + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=y_size)
-                   + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=-y_size)
+                   + kernel_profile(xv_test, yv_test, x_offset=x_size_kernel, y_offset=0)
+                   + kernel_profile(xv_test, yv_test, x_offset=-x_size_kernel, y_offset=0)
+                   + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=y_size_kernel)
+                   + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=-y_size_kernel)
                    )
     xv_k, yv_k = np.where(kernel_test >= threshold)
     # print("xv_k:", min(xv_k), max(xv_k), len(xv_k))
@@ -61,8 +61,8 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     # print("x_pix:", x_pix)
     # print("y_pix:", y_pix)
 
-    dx_arr = x_loc - x_pix
-    dy_arr = y_loc - y_pix
+    dx_arr = x_loc - np.floor(x_loc)
+    dy_arr = y_loc - np.floor(y_loc)
     # print("dx_arr:", dx_arr)
     # print("dy_arr: ", dy_arr)
 
@@ -114,7 +114,7 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
         kernel_single = kernel_x[xv_k_i] * kernel_y[yv_k_i]
         x_inds = x_pix[_i] + xv_k
         y_inds = y_pix[_i] + yv_k
-        model_img_full[x_inds, y_inds] += amp[_i] * kernel_single
+        model_img_full[y_inds, x_inds] += amp[_i] * kernel_single
 
     x_low_img = int(np.max((x0, 0)))
     y_low_img = int(np.max((y0, 0)))
@@ -124,33 +124,38 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     y_low_full = int(np.max((-y0, 0)))
     x_high_full = x_high_img - x_low_img + x_low_full
     y_high_full = y_high_img - y_low_img + y_low_full
+    # print(x_low_img, x_high_img, x_high_img - x_low_img)
+    # print(y_low_img, y_high_img, y_high_img - y_low_img)
+    # print(x_low_full, x_high_full, x_high_full - x_low_full)
+    # print(y_low_full, y_high_full, y_high_full - y_low_full)
+    # print(x0, y0)
 
-    model_img = np.zeros((x_size, y_size), dtype=np.float64)
-    model_img[x_low_img:x_high_img, y_low_img:y_high_img] = \
-        model_img_full[x_low_full:x_high_full, y_low_full:y_high_full]
-
-    """
-    if x_low_full > 0:
-        model_img[x_size - x_low_full: x_size, y_low_img: y_high_img] += \
-            model_img_full[0: x_low_full, y_low_full: y_high_full]
-    """
-    """
-    if y_low_full > 0:
-        model_img[x_low_img: x_high_img, y_size - y_low_full: y_size] += \
-            model_img_full[x_low_full: x_high_full, 0: y_low_full]
-    """
-    """
-    if x_high_full < x_size:
-        model_img[0: x_size_full - x_high_full - 1, y_low_img: y_high_img] += \
-            model_img_full[x_high_full + 1: x_size_full, y_low_full: y_high_full]
-    """
-    """
-    if y_high_full < y_size:
-        model_img[x_low_img: x_high_img, 0: y_size_full - y_high_full - 1] += \
-            model_img_full[x_low_full: x_high_full, y_high_full + 1: y_size_full]
-    """
-    # IMPORTANT: See note near the beginning explaining why we have to take the transpose on output
-    return(model_img.T)
+    # model_img = np.zeros((y_size, x_size), dtype=np.float64)
+    # [y_low_img:y_high_img, x_low_img:x_high_img] = \
+    model_img = model_img_full[y_low_full:y_high_full, x_low_full:x_high_full]
+    # if x_low_full > 0:
+    full_view = model_img_full[y_low_full: y_high_full, 0: x_low_full]
+    img_view = model_img[y_low_img: y_high_img, x_size - x_low_full: x_size]
+    model_img[y_low_img: y_high_img, x_size - x_low_full: x_size] = \
+        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    # if y_low_full > 0:
+    full_view = model_img_full[0: y_low_full, x_low_full: x_high_full]
+    img_view = model_img[y_size - y_low_full: y_size, x_low_img: x_high_img]
+    model_img[y_size - y_low_full: y_size, x_low_img: x_high_img] = \
+        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    
+    # if x_high_full < x_size_full:
+    full_view = model_img_full[y_low_full: y_high_full, x_high_full + 1: x_size_full]
+    img_view = model_img[y_low_img: y_high_img, 0: x_size_full - x_high_full - 1]
+    model_img[y_low_img: y_high_img, 0: x_size_full - x_high_full - 1] = \
+        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    # if y_high_full < y_size_full:
+    full_view = model_img_full[y_high_full + 1: y_size_full, x_low_full: x_high_full]
+    img_view = model_img[0: y_size_full - y_high_full - 1, x_low_img: x_high_img]
+    model_img[0: y_size_full - y_high_full - 1, x_low_img: x_high_img] = \
+        np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
+    
+    return(model_img)
 
 
 def run(exit=False):

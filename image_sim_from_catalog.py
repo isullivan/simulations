@@ -1,5 +1,5 @@
 """This uses a fast and accurate DFT approximation to grid data using a supplied PSF as a kernel."""
-from numpy.fft import fft2, ifft2, ifftshift
+from numpy.fft import fft2, ifft2, fftshift
 import math
 from numpy import real
 # import lsst.afw.table as afwTable
@@ -39,10 +39,10 @@ def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
 
     source_image = fast_dft(flux, xv, yv, x_size=x_size, y_size=y_size, no_fft=True, threshold=threshold)
 
-    return(source_image)
+    # return(source_image)
     psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel',
-                              nx=x_size, ny=y_size, offset=[0.5, 0.5], use_true_center=True)
-    convol = fft2(source_image) * fft2(ifftshift(psf_image.array))
+                              nx=x_size, ny=y_size, offset=[0, 0], use_true_center=False)
+    convol = fft2(source_image) * fft2(fftshift(psf_image.array))
     if return_fft:
         return(convol)
     else:
