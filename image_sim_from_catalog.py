@@ -9,7 +9,7 @@ from true_dft import true_dft
 
 
 def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
-              return_fft=False, pixel_scale=None, true=True):
+              return_fft=False, pixel_scale=None, use_true=False, pad_image=2):
     """
     Take a source catalog, bounding box, and psf and construct a simulated image.
     @param[in] catalog source catalog with schema
@@ -33,20 +33,39 @@ def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
 
     fluxKey = schema.find(fluxName).key
     x0, y0 = bbox.getBegin()
+    # if catalog.isContiguous()
+    flux = catalog[fluxKey]
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
-    flux = catalog[fluxKey]
     x_size, y_size = bbox.getDimensions()
 
-    if true:
-        source_image = true_dft(flux, xv, yv, x_size=x_size, y_size=y_size, no_fft=True, threshold=threshold)
+    if pad_image > 1:
+        x_size_use = x_size * pad_image
+        y_size_use = y_size * pad_image
+        pad_kernel = 1
     else:
-        source_image = fast_dft(flux, xv, yv, x_size=x_size, y_size=y_size, no_fft=True, threshold=threshold)
-    # return(source_image)
+        x_size_use = x_size * pad_image
+        y_size_use = y_size * pad_image
+        pad_kernel = 2
+    x0 = (x_size_use - x_size) // 2
+    x1 = x0 + x_size
+    y0 = (y_size_use - y_size) // 2
+    y1 = y0 + y_size
+    xv += x0
+    yv += y0
+
     psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel',
-                              nx=x_size, ny=y_size, offset=[0, 0], use_true_center=False)
-    convol = fft2(source_image) * fft2(psf_image.array)
-    if return_fft:
-        return(convol)
+                              nx=x_size_use, ny=y_size_use, offset=[0, 0], use_true_center=False)
+
+    if use_true:
+        source_image = true_dft(flux, xv, yv, x_size=x_size_use, y_size=y_size_use,
+                                no_fft=True, threshold=threshold)
     else:
-        return(real(fftshift(ifft2(convol))))
+        source_image = fast_dft(flux, xv, yv, x_size=x_size_use, y_size=y_size_use,
+                                no_fft=True, threshold=threshold, pad_kernel=pad_kernel)
+    # return(source_image)
+    convol = fft2(source_image) * fft2(psf_image.array)
+    # fft_filter = outer(hanning(y_size_use), hanning(x_size_use))
+    # convol *= fftshift(fft_filter)
+    return_image = real(fftshift(ifft2(convol)))
+    return(return_image[y0:y1, x0:x1])

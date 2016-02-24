@@ -23,8 +23,8 @@ def true_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None, no_fft
     phase = xvals.T * x_use + yvals.T * y_use
     cos_term = np.cos(-phase)
     sin_term = np.sin(-phase)
-    source_uv_real_vals = cos_term * amp_use
-    source_uv_im_vals = sin_term * amp_use
+    source_uv_real_vals = cos_term * amp_use.T
+    source_uv_im_vals = sin_term * amp_use.T
     fft_vals = 1j * source_uv_im_vals
     fft_vals += source_uv_real_vals
     fft_vals = np.fft.fftshift(fft_vals.reshape(y_size, x_size))
