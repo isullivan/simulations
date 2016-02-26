@@ -11,14 +11,6 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None,
     """
     pi = np.pi
 
-    # ensure that the parameters are iterable
-    def input_type_check(var):
-        if not hasattr(var, '__iter__'):
-            var = [var]
-        if type(var) != np.ndarray:
-            var = np.array(var)
-        return(var)
-
     amp = input_type_check(amp)
     x_loc = input_type_check(x_loc)
     y_loc = input_type_check(y_loc)
@@ -30,56 +22,56 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None,
 
     # 1/2 value of kernel_test along either axis and one bin to either side at the edge of the image.
     threshold_max = 1.0 / (((2.0 * pi) ** 2.0) * np.max((x_size_kernel, y_size_kernel)))
-    threshold_max /= 2.0
-    # threshold_max = np.min([threshold_max, 1e-5])
     if threshold is None:
         threshold_use = threshold_max
     else:
         threshold_use = np.min([threshold, threshold_max])
     print("Threshold used:", threshold_use)
 
-    # NOTE: appear to need to use 'ij' (matrix) indexing here, which results in a transposed array, then
-    #       take transpose of final image at the end. This is confusing and clearly a bug, but it works
-    xv_test, yv_test = np.meshgrid(np.arange(x_size_kernel), np.arange(y_size_kernel), indexing='xy')
-    xv_test -= x_size_kernel // 2
-    yv_test -= y_size_kernel // 2
+    # pre-compute the indices of the convolution kernel.
+    class KernelObj:
+        kernel_test_maxval = 100.0 / threshold_use
 
-    kernel_test_maxval = 100.0 / threshold_use
+        def __init__(self, x_size, y_size):
+            xvals, yvals = np.meshgrid(np.arange(x_size), np.arange(y_size), indexing='xy')
+            self.xvals = xvals - x_size // 2
+            self.yvals = yvals - y_size // 2
+            self.array = np.zeros((y_size, x_size), dtype=np.float64)
 
-    def kernel_profile(x, y, x_offset=0, y_offset=0, kernel_min=1, kernel_max=kernel_test_maxval):
-        x_profile = np.clip(abs(np.pi * (xv_test - x_offset)), kernel_min, kernel_max)
-        y_profile = np.clip(abs(np.pi * (yv_test - y_offset)), kernel_min, kernel_max)
-        return(1.0 / (x_profile * y_profile))
+        def profile(self, x_offset=0, y_offset=0, kernel_min=1, kernel_max=kernel_test_maxval):
+            x_profile = np.clip(abs(pi * (self.xvals - x_offset)), kernel_min, kernel_max)
+            y_profile = np.clip(abs(pi * (self.yvals - y_offset)), kernel_min, kernel_max)
+            array = 1.0 / (x_profile * y_profile)
+            # We want to be sure to capture one pixel beyond our given threshold
+            for axis in [0, 1]:
+                array += (np.roll(array, 1, axis=axis) + np.roll(array, -1, axis=axis)) / 2.0
+            self.array += array
 
-    kernel_test = (kernel_profile(xv_test, yv_test, x_offset=0, y_offset=0)
-                   + kernel_profile(xv_test, yv_test, x_offset=x_size_kernel, y_offset=0)
-                   + kernel_profile(xv_test, yv_test, x_offset=-x_size_kernel, y_offset=0)
-                   + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=y_size_kernel)
-                   + kernel_profile(xv_test, yv_test, x_offset=0, y_offset=-y_size_kernel)
-                   )
-    # pre-compute the indices of the convolution kernel
-    xv_k_i, yv_k_i = np.where(kernel_test >= threshold_use)
-    # print("xv_k:", min(xv_k), max(xv_k), len(xv_k))
-    # print("yv_k:", min(yv_k), max(yv_k), len(yv_k))
+        def threshold_inds(self, threshold):
+            return(np.where(self.array >= threshold))
+
+    KernelTest = KernelObj(x_size_kernel, y_size_kernel)
+    for x_off in [0, x_size_kernel, -x_size_kernel]:
+        for y_off in [0, y_size_kernel, -y_size_kernel]:
+            KernelTest.profile(x_offset=x_off, y_offset=y_off)
+    xv_k_i, yv_k_i = KernelTest.threshold_inds(threshold_use)
+
     print("Fraction of pixels used:", 100 * len(xv_k_i) / (x_size_kernel * y_size_kernel))
     xv_k = xv_k_i - int(round(x_size_kernel / 2.0))
     yv_k = yv_k_i - int(round(y_size_kernel / 2.0))
 
     x_pix = input_type_check([int(num) for num in np.floor(x_loc)])
     y_pix = input_type_check([int(num) for num in np.floor(y_loc)])
-    # print("x_pix:", x_pix)
-    # print("y_pix:", y_pix)
 
     dx_arr = x_loc - np.floor(x_loc)
     dy_arr = y_loc - np.floor(y_loc)
-    # print("dx_arr:", dx_arr)
-    # print("dy_arr: ", dy_arr)
+    n_src = len(x_loc)
 
     x0 = int(np.min(x_pix) + np.min(xv_k))
     y0 = int(np.min(y_pix) + np.min(yv_k))
 
-    x_size_full = x_size_kernel * 2 #int(np.max(x_pix) + np.max(xv_k) - x0 + 1)
-    y_size_full = y_size_kernel * 2 #int(np.max(y_pix) + np.max(yv_k) - y0 + 1)
+    x_size_full = x_size_kernel * 2
+    y_size_full = y_size_kernel * 2
     x_pix -= x0
     y_pix -= y0
     """
@@ -94,65 +86,57 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None,
     yv0 = np.arange(y_size_kernel, dtype=np.float64) - int(round(y_size_kernel / 2.0))
     x_sign = np.power(-1.0, xv0)
     y_sign = np.power(-1.0, yv0)
-
-    sin_x = np.sin(-pi * dx_arr)
-    sin_y = np.sin(-pi * dy_arr)
-
-    for _i in range(len(amp)):
-        if dx_arr[_i] == 0:
-            kernel_x = np.zeros(x_size_kernel, dtype=np.float64)
-            kernel_x[x_size_kernel // 2] = 1.0
+    
+    def kernel_1d(delta_arr, sign, locs, size):
+        for delta in delta_arr:
+            if delta == 0:
+                kernel = np.zeros(size, dtype=np.float64)
+                kernel[size // 2] = 1.0
+            else:
+                kernel = np.sin(-pi * delta) / (pi * (locs - delta))
+                kernel *= sign
+            yield kernel
+    kernel_x_gen = kernel_1d(dx_arr, x_sign, xv0, x_size_full)
+    kernel_y_gen = kernel_1d(dy_arr, y_sign, yv0, y_size_full)
+    
+    """
+    def kernel_1d(delta=None, sign_arr=None, locs=None, size=None):
+        if delta == 0:
+            kernel = np.zeros(size, dtype=np.float64)
+            kernel[size // 2] = 1.0
         else:
-            """
-            kernel_x = (sin_x[_i] / (pi * (xv0 - dx_arr[_i]))
-                        + sin_x[_i] / (pi * (x_size_full + xv0 - dx_arr[_i] + x0))
-                        + sin_x[_i] / (pi * (-x_size_full + xv0 - dx_arr[_i] - x0))
-                        )
-            """
-            kernel_x = sin_x[_i] / (pi * (xv0 - dx_arr[_i]))
-            kernel_x *= x_sign
-            # kernel_x /= np.sum(kernel_x)
-        if dy_arr[_i] == 0:
-            kernel_y = np.zeros(y_size_kernel, dtype=np.float64)
-            kernel_y[y_size_kernel // 2] = 1.0
-        else:
-            """
-            kernel_y = (sin_y[_i] / (pi * (yv0 - dy_arr[_i]))
-                        + sin_y[_i] / (pi * (y_size_full + yv0 - dy_arr[_i] + y0))
-                        + sin_y[_i] / (pi * (-y_size_full + yv0 - dy_arr[_i] - y0))
-                        )
-            """
-            kernel_y = sin_y[_i] / (pi * (yv0 - dy_arr[_i]))
-            kernel_y *= y_sign
-            # kernel_y /= np.sum(kernel_y)
+            # kernel = np.sin(-pi * delta) * (1.0 / (pi * (locs - delta))
+            #                  + 1.0 / (pi * (size + locs - delta + x0))
+            #                  + 1.0 / (pi * (-size + locs - delta - x0))
+            #                  )
+            kernel = np.sin(-pi * delta) / (pi * (locs - delta))
+            kernel *= sign_arr
+        return(kernel)
+    """
+    for _i in range(n_src):
+        kernel_x = next(kernel_x_gen)
+        kernel_y = next(kernel_y_gen)
         kernel_x = kernel_x[xv_k_i]
         kernel_y = kernel_y[yv_k_i]
         kernel_single = kernel_x * kernel_y
-        # kernel_single = kernel_x[xv_k_i] * kernel_y[yv_k_i]
-        # kernel_single /=np.sum(kernel_single)
         x_inds = x_pix[_i] + xv_k
         y_inds = y_pix[_i] + yv_k
         model_img_full[y_inds, x_inds] += amp[_i] * kernel_single
 
     x_low_img = int(np.max((x0, 0)))
     y_low_img = int(np.max((y0, 0)))
-    x_high_img = int(np.min((x0 + x_size_full, x_size)))
-    y_high_img = int(np.min((y0 + y_size_full, y_size)))
     x_low_full = int(np.max((-x0, 0)))
     y_low_full = int(np.max((-y0, 0)))
+
+    x_high_img = int(np.min((x0 + x_size_full, x_size)))
+    y_high_img = int(np.min((y0 + y_size_full, y_size)))
     x_high_full = x_high_img - x_low_img + x_low_full
     y_high_full = y_high_img - y_low_img + y_low_full
-    # print(x_low_img, x_high_img, x_high_img - x_low_img)
-    # print(y_low_img, y_high_img, y_high_img - y_low_img)
-    # print(x_low_full, x_high_full, x_high_full - x_low_full)
-    # print(y_low_full, y_high_full, y_high_full - y_low_full)
-    # print(x0, y0)
 
     model_img = np.zeros((y_size, x_size), dtype=np.float64)
     model_img[y_low_img:y_high_img, x_low_img:x_high_img] = \
         model_img_full[y_low_full:y_high_full, x_low_full:x_high_full]
     
-    # model_img_full = np.fliplr(np.flipud(model_img_full))
     if x_low_full > 0:
         # print("Aliasing x low")
         full_view = model_img_full[y_low_full: y_high_full, 0: x_low_full]
@@ -182,6 +166,15 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None,
         # img_view = np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
     
     return(model_img)
+
+
+def input_type_check(var):
+    """Ensure that the parameters are iterable."""
+    if not hasattr(var, '__iter__'):
+        var = [var]
+    if type(var) != np.ndarray:
+        var = np.array(var)
+    return(var)
 
 
 def run(exit=False):
