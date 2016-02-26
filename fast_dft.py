@@ -74,6 +74,10 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None,
     y_size_full = y_size_kernel * 2
     x_pix -= x0
     y_pix -= y0
+    y_low = y_pix + np.min(yv_k)
+    y_high = y_low + y_size_kernel
+    x_low = x_pix + np.min(xv_k)
+    x_high = x_low + x_size_kernel
 
     model_img_full = np.zeros((x_size_full, y_size_full), dtype=np.float64)
     xv0 = np.arange(x_size_kernel, dtype=np.float64) - int(round(x_size_kernel / 2.0))
@@ -89,19 +93,22 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, threshold=None,
             else:
                 kernel = np.sin(-pi * delta) / (pi * (locs - delta))
                 kernel *= sign
-            yield kernel
-    kernel_x_gen = kernel_1d(dx_arr, x_sign, xv0, x_size_full)
-    kernel_y_gen = kernel_1d(dy_arr, y_sign, yv0, y_size_full)
+            yield np.matrix(kernel)
+            # yield kernel
+    kernel_x_gen = kernel_1d(dx_arr, x_sign, xv0, x_size_kernel)
+    kernel_y_gen = kernel_1d(dy_arr, y_sign, yv0, y_size_kernel)
 
     for _i in range(n_src):
         kernel_x = next(kernel_x_gen)
         kernel_y = next(kernel_y_gen)
-        kernel_x = kernel_x[xv_k_i]
-        kernel_y = kernel_y[yv_k_i]
-        kernel_single = kernel_x * kernel_y
-        x_inds = x_pix[_i] + xv_k
-        y_inds = y_pix[_i] + yv_k
-        model_img_full[y_inds, x_inds] += amp[_i] * kernel_single
+        kernel_single = np.outer(kernel_x, kernel_y)
+        # kernel_x = kernel_x[xv_k_i]
+        # kernel_y = kernel_y[yv_k_i]
+        # kernel_single = kernel_x * kernel_y
+        # x_inds = x_pix[_i] + xv_k
+        # y_inds = y_pix[_i] + yv_k
+        # model_img_full[y_inds, x_inds] += amp[_i] * kernel_single
+        model_img_full[y_low[_i]:y_high[_i], x_low[_i]:x_high[_i]] += amp[_i] * kernel_single
 
     x_low_img = int(np.max((x0, 0)))
     y_low_img = int(np.max((y0, 0)))
