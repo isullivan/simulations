@@ -62,7 +62,7 @@ def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
                                 no_fft=True, threshold=threshold)
     else:
         source_image = fast_dft(flux, xv, yv, x_size=x_size_use, y_size=y_size_use,
-                                no_fft=True, threshold=threshold, pad_kernel=pad_kernel)
+                                no_fft=True, pad_kernel=pad_kernel)
     # return(source_image)
     convol = fft2(source_image) * fft2(psf_image.array)
     # fft_filter = outer(hanning(y_size_use), hanning(x_size_use))
