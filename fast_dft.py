@@ -13,6 +13,12 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, no_fft=False, pad_kern
     amp = input_type_check(amp)
     x_loc = input_type_check(x_loc)
     y_loc = input_type_check(y_loc)
+    if amp.ndim > 1:
+        n_cat = amp.shape[1]
+        multi_catalog = True
+    else:
+        n_cat = 1
+        multi_catalog = False
 
     if y_size is None:
         y_size = x_size
@@ -38,7 +44,6 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, no_fft=False, pad_kern
     x_low = x_pix - int(round(x_size_kernel / 2.0))
     x_high = x_low + x_size_kernel
 
-    model_img_full = np.zeros((x_size_full, y_size_full), dtype=np.float64)
     xv0 = np.arange(x_size_kernel, dtype=np.float64) - int(round(x_size_kernel / 2.0))
     yv0 = np.arange(y_size_kernel, dtype=np.float64) - int(round(y_size_kernel / 2.0))
     x_sign = np.power(-1.0, xv0)
@@ -57,9 +62,18 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, no_fft=False, pad_kern
     kernel_x_gen = kernel_1d(dx_arr, x_sign, xv0, x_size_kernel)
     kernel_y_gen = kernel_1d(dy_arr, y_sign, yv0, y_size_kernel)
 
-    for _i in range(n_src):
-        kernel_single = np.outer(next(kernel_x_gen), next(kernel_y_gen))
-        model_img_full[y_low[_i]:y_high[_i], x_low[_i]:x_high[_i]] += amp[_i] * kernel_single
+    if multi_catalog:
+        model_img_full = [np.zeros((y_size_full, x_size_full), dtype=np.float64) for _i in range(n_cat)]
+        for _i in range(n_src):
+            kernel_single = np.outer(next(kernel_x_gen), next(kernel_y_gen))
+            for ci in range(n_cat):
+                model_img_full[ci][y_low[_i]:y_high[_i], x_low[_i]:x_high[_i]] += amp[_i, ci] * kernel_single
+    else:
+        model_img_full = np.zeros((y_size_full, x_size_full), dtype=np.float64)
+        for _i in range(n_src):
+            # If there is only a single set of amplitudes it is more efficient to multiply by amp in 1D
+            kernel_single = np.outer(amp[_i] * next(kernel_x_gen), next(kernel_y_gen))
+            model_img_full[y_low[_i]:y_high[_i], x_low[_i]:x_high[_i]] += kernel_single
 
     def alias_image(model_img_full):
         x_low_img = int(np.max((x0, 0)))
@@ -101,7 +115,12 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, no_fft=False, pad_kern
             # img_view = np.where(np.abs(img_view) > np.abs(full_view), img_view, full_view)
         return(model_img)
 
-    model_img = alias_image(model_img_full)
+    if multi_catalog:
+        model_img = []
+        for ci in range(n_cat):
+            model_img.append(alias_image(model_img_full[ci]))
+    else:
+        model_img = alias_image(model_img_full)
     return(model_img)
 
 
