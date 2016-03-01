@@ -45,13 +45,11 @@ def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
     x_size, y_size = bbox.getDimensions()
 
     if pad_image > 1:
-        x_size_use = x_size * pad_image
-        y_size_use = y_size * pad_image
-        pad_kernel = 1
+        x_size_use = int(x_size * pad_image)
+        y_size_use = int(y_size * pad_image)
     else:
-        x_size_use = x_size * pad_image
-        y_size_use = y_size * pad_image
-        pad_kernel = 2
+        x_size_use = int(x_size * pad_image)
+        y_size_use = int(y_size * pad_image)
     x0 = (x_size_use - x_size) // 2
     x1 = x0 + x_size
     y0 = (y_size_use - y_size) // 2
@@ -66,12 +64,14 @@ def cat_image(catalog=None, bbox=None, psf=None, threshold=None, name=None,
         source_image = true_dft(flux, xv, yv, x_size=x_size_use, y_size=y_size_use,
                                 no_fft=True, threshold=threshold)
     else:
-        source_image_use = fast_dft(flux_use, xv, yv, x_size=x_size_use, y_size=y_size_use,
-                                    no_fft=True, pad_kernel=pad_kernel)
+        source_image = fast_dft(flux, xv, yv, x_size=x_size_use, y_size=y_size_use, no_fft=True)
+
+    """
     # This is not how I want to implement DCR sims. It is for timing tests
     source_image = source_image_use[0]
     for _i in range(n_cat - 1):
         source_image += source_image_use[_i + 1]
+    """
     # return(source_image)
     convol = fft2(source_image) * fft2(psf_image.array)
     # fft_filter = outer(hanning(y_size_use), hanning(x_size_use))
