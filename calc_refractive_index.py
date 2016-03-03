@@ -7,7 +7,7 @@ def refraction(wavelength, zenith_angle, atmospheric_pressure, temperature, humi
     """Calculate overall refraction under atmospherica and observing conditions.
     input pressure is in atmospheres
     wavelength and zenith_angle may be supplied as numpy vectors
-    wavelength is in Angstroms (valid for 2302 < wavelength < 20586)
+    wavelength is in nm (valid for 230.2 < wavelength < 2058.6)
     temperature is in Celcius (valid for -20 < T < 50)
     humidity is in percent (0-100)
     zenith angle is in degrees. Equations are valid for zenith_angle < 75
@@ -58,9 +58,9 @@ def n_delta(wavelength, dry_pressure, water_vapor_pressure=0.0, temperature=300.
     temperature is in units of Kelvin
     pressures are in units of millibar
     want wave number in units 1/micron
-    wavelength is input in Angstroms
+    wavelength is input in nm
     """
-    wave_num = 1E4 / wavelength
+    wave_num = 1E3 / wavelength
 
     dry_air_term = (2371.34 + (683939.7 / (130. - np.power(wave_num, 2.))) +
                     (4547.3 / (38.9 - np.power(wave_num, 2.))))

@@ -116,7 +116,6 @@ def dcr_generator(band_def, pixel_scale=None, elevation=None, azimuth=None, **kw
         refract_amp *= 3600.0 / pixel_scale  # Refraction initially in degrees, convert to pixels.
         dx = refract_amp * np.sin(np.radians(azimuth))
         dy = refract_amp * np.cos(np.radians(azimuth))
-        print("Dx: ", dx, " | Dy: ", dy)
         yield((dx, dy))
 
 
