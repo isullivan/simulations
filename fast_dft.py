@@ -43,7 +43,7 @@ def fast_dft(amp, x_loc, y_loc, x_size=None, y_size=None, no_fft=False):
     if multi_catalog:
         model_img = [np.zeros((y_size, x_size), dtype=np.float64) for _i in range(n_cat)]
         for _i in range(n_src):
-            kernel_single = np.outer(next(kernel_x_gen), next(kernel_y_gen))
+            kernel_single = np.outer(next(kernel_y_gen), next(kernel_x_gen))
             for ci in range(n_cat):
                 model_img[ci] += amp[_i, ci] * kernel_single
     else:

@@ -12,15 +12,17 @@ bbox_init = afwGeom.Box2I(afwGeom.PointI(0, 0), afwGeom.ExtentI(512, 512))
 
 
 def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=None, pad_image=1.1,
-              sky_noise=0.0, instrument_noise=0.0, **kwargs):
+              sky_noise=0.0, instrument_noise=0.0, dcr_flag=False, band_name='g', **kwargs):
     """Wrapper that takes a catalog of stars and simulates an image."""
     if catalog is None:
         catalog = cat_sim(bbox=bbox, name=name, **kwargs)
+    schema = catalog.getSchema()
+    n_star = len(catalog)
+    band_def = BandDefine(band_name=band_name, **kwargs)
     x_size, y_size = bbox.getDimensions()
     x0, y0 = bbox.getBegin()
     if name is None:
         # If no name is supplied, find the first entry in the schema in the format *_flux
-        schema = catalog.getSchema()
         schema_entry = schema.extract("*_flux", ordered='true')
         fluxName = schema_entry.iterkeys().next()
     else:
@@ -39,6 +41,16 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     # if catalog.isContiguous()
     flux = catalog[fluxKey]
     temperatures = catalog[temperatureKey]
+    if dcr_flag:
+        flux_arr = np.ndarray((n_star, band_def.n_step))
+        for _i in range(n_star):
+            f_star = flux[_i]
+            t_star = temperatures[_i]
+            star_spectrum = star_gen(temperature=t_star, flux=f_star, band_def=band_def)
+            flux_arr[_i, :] = np.array([f for f in star_spectrum])
+    else:
+        flux_arr = flux
+    print(band_def.n_step, flux_arr.shape)
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
 
@@ -55,21 +67,26 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     xv += x0
     yv += y0
 
-    psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel',
-                              nx=x_size_use, ny=y_size_use, offset=[0, 0], use_true_center=False)
+    source_image = fast_dft(flux_arr, xv, yv, x_size=x_size_use, y_size=y_size_use, no_fft=True)
 
-    source_image = fast_dft(flux, xv, yv, x_size=x_size_use, y_size=y_size_use, no_fft=True)
-    if sky_noise > 0:
-        source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
+    if dcr_flag:
+        convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
+        dcr_offset = [[0, 0]] * band_def.n_step
+        for _i in range(band_def.n_step):
+            psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=dcr_offset[_i],
+                                      nx=x_size_use, ny=y_size_use, use_true_center=False)
+            source_image_use = source_image[_i]
+            if sky_noise > 0:
+                source_image_use += (np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
+                                     / math.sqrt(band_def.n_step))
+            convol += fft2(source_image_use) * fft2(psf_image.array)
+    else:
+        psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=[0, 0],
+                                  nx=x_size_use, ny=y_size_use, use_true_center=False)
+        if sky_noise > 0:
+            source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
+        convol = fft2(source_image) * fft2(psf_image.array)
 
-    """
-    # This is not how I want to implement DCR sims. It is for timing tests
-    source_image = source_image_use[0]
-    for _i in range(n_cat - 1):
-        source_image += source_image_use[_i + 1]
-    """
-    # return(source_image)
-    convol = fft2(source_image) * fft2(psf_image.array)
     # fft_filter = outer(hanning(y_size_use), hanning(x_size_use))
     # convol *= fftshift(fft_filter)
     return_image = np.real(fftshift(ifft2(convol)))
@@ -78,7 +95,7 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     return(return_image[y0:y1, x0:x1])
 
 
-def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None):
+def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None, **kwargs):
     """Wrapper function that generates a semi-realistic catalog of stars."""
     schema = afwTable.SourceTable.makeMinimalSchema()
     if name is None:
@@ -121,10 +138,11 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None):
     return(catalog.copy(True))  # Return a copy to make sure it is contiguous in memory.
 
 
-def random_star(seed=None, temperature=5600, flux=1.0, Band=None):
-    """Generate a blackbody radiation spectrum at a given temperature over a range of wavelengths.
+def star_gen(seed=None, temperature=5600, flux=1.0, band_def=None):
+    """Generate a blackbody radiation spectrum at a given temperature over a range of wavelengths."""
+    """
         The output is normalized to sum to the given flux.
-        If a seed is supplied, noise can be added to the final spectrum before normalization.
+        [future] If a seed is supplied, noise can be added to the final spectrum before normalization.
     """
     h = constants.Planck
     kb = constants.Boltzmann
@@ -153,30 +171,31 @@ def random_star(seed=None, temperature=5600, flux=1.0, Band=None):
         radiance_integral2 = prefactor * integral(radiance2)
         return(radiance_integral1 - radiance_integral2)
 
-    normalization = flux / radiance_calc(temperature, Band.start, Band.end)
-    for wave_start, wave_end in wavelength_iterator(Band):
+    normalization = flux / radiance_calc(temperature, band_def.start, band_def.end)
+    for wave_start, wave_end in wavelength_iterator(band_def):
         yield(normalization * radiance_calc(temperature, wave_start, wave_end))
 
 
 class BandDefine:
     """Define the wavelength range and resolution for a given ugrizy band."""
 
-    def __init__(self, band_name='g', step=10):
+    def __init__(self, band_name='g', step=10, **kwargs):
         band_dict = {'u': (324.0, 395.0), 'g': (405.0, 552.0), 'r': (552.0, 691.0),
                      'i': (818.0, 921.0), 'z': (922.0, 997.0), 'y': (975.0, 1075.0)}
         band_range = band_dict[band_name]
         self.start = band_range[0]
         self.end = band_range[1]
         self.step = step
+        self.n_step = int(np.ceil((band_range[1] - band_range[0]) / step))
 
 
-def wavelength_iterator(band_obj):
+def wavelength_iterator(band_def):
     """Define iterator to ensure that loops over wavelength are consistent."""
-    wave_start = band_obj.start
-    while wave_start < band_obj.end:
-        wave_end = wave_start + band_obj.step
-        if wave_end > band_obj.end:
-            wave_end = band_obj.end
+    wave_start = band_def.start
+    while wave_start < band_def.end:
+        wave_end = wave_start + band_def.step
+        if wave_end > band_def.end:
+            wave_end = band_def.end
         yield((wave_start, wave_end))
         wave_start = wave_end
 
