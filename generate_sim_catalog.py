@@ -137,7 +137,7 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None, **kwarg
 
     x_size, y_size = bbox.getDimensions()
     x0, y0 = bbox.getBegin()
-    temperature, luminosity = stellar_distribution(seed=seed, n_star=n_star)
+    temperature, luminosity = stellar_distribution(seed=seed, n_star=n_star, **kwargs)
     rand_gen = np.random
     if seed is not None:
         rand_gen.seed(seed + 1)  # ensure that we use a different seed than stellar_distribution.
@@ -227,28 +227,32 @@ def wavelength_iterator(band_def, use_midpoint=False):
         wave_start = wave_end
 
 
-def stellar_distribution(seed=None, n_star=None):
+def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star='M', **kwargs):
     """Function that attempts to return a realistic distribution of temperatures and luminosity scales."""
-    star_prob = [0., 76.45, 12.1, 7.6, 3, 0.6, 0.13, 3E-5]
-    star_prob = np.cumsum(star_prob)
+    star_prob = [76.45, 12.1, 7.6, 3, 0.6, 0.13, 3E-5]
     luminosity_scale = [(0.01, 0.08), (0.08, 0.6), (0.6, 1.5), (1.5, 5.0), (5.0, 25.0), (25.0, 30000.0),
                         (30000.0, 50000.0)]  # hotter stars are brighter on average.
     temperature_range = [(2400, 3700), (3700, 5200), (5200, 6000), (6000, 7500), (7500, 10000),
                          (10000, 30000), (30000, 50000)]
     star_type = {'M': 0, 'K': 1, 'G': 2, 'F': 3, 'A': 4, 'B': 5, 'O': 6}
-    brightest_star = 'A'
-    max_prob = np.max(star_prob[0:star_type[brightest_star] + 1])
+    s_hot = star_type[hottest_star] + 1
+    s_cool = star_type[coolest_star]
+    n_star_type = s_hot - s_cool
+    star_prob = star_prob[s_cool:s_hot]
+    star_prob.insert(0, 0)
+    luminosity_scale = luminosity_scale[s_cool:s_hot]
+    temperature_range = temperature_range[s_cool:s_hot]
+    star_prob = np.cumsum(star_prob)
+    max_prob = np.max(star_prob)
     rand_gen = np.random
     if seed is not None:
         rand_gen.seed(seed)
     star_sort = rand_gen.uniform(0, max_prob, n_star)
     temperature = []
     luminosity = []
-    for _i in range(star_type[brightest_star]):
+    for _i in range(n_star_type):
         inds = np.where((star_sort < star_prob[_i + 1]) * (star_sort > star_prob[_i]))
-        inds = inds[0]
-        # if not inds.any():
-        #    continue
+        inds = inds[0]  # np.where returns a tuple of two arrays
         for ind in inds:
             temp_use = rand_gen.uniform(temperature_range[_i][0], temperature_range[_i][1])
             lum_use = rand_gen.uniform(luminosity_scale[_i][0], luminosity_scale[_i][1])
