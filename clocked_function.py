@@ -2,9 +2,9 @@ import time
 
 
 def clocked_function(func):
-    def clocked(*args):
+    def clocked(*args, **kwargs):
         t0 = time.time()
-        result = func(*args)
+        result = func(*args, **kwargs)
         elapsed = time.time() - t0
         print('Timing: [%0.8fs]' % (elapsed))
         return result
