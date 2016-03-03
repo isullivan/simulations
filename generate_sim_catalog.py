@@ -7,6 +7,7 @@ from numpy.fft import fft2, ifft2, fftshift
 # import math
 from scipy import constants
 import galsim
+from calc_refractive_index import diff_refraction
 from fast_dft import fast_dft
 bbox_init = afwGeom.Box2I(afwGeom.PointI(0, 0), afwGeom.ExtentI(512, 512))
 photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
@@ -72,9 +73,9 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
 
     if dcr_flag:
         convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
-        dcr_offset = [[0, 0]] * band_def.n_step
+        dcr_gen = dcr_generator(band_def, pixel_scale=pixel_scale, **kwargs)
         for _i in range(band_def.n_step):
-            psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=dcr_offset[_i],
+            psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=dcr_gen.next(),
                                       nx=x_size_use, ny=y_size_use, use_true_center=False)
             source_image_use = source_image[_i]
             if sky_noise > 0:
@@ -98,6 +99,25 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     if instrument_noise > 0:
         return_image += np.random.normal(scale=instrument_noise, size=(y_size_use, x_size_use))
     return(return_image[y0:y1, x0:x1])
+
+
+def dcr_generator(band_def, pixel_scale=None, elevation=None, azimuth=None, **kwargs):
+    """Call the functions that compute Differential Chromatic Refraction."""
+    if elevation is None:
+        elevation = 50.0
+    if azimuth is None:
+        azimuth = 0.0
+    zenith_angle = 90.0 - elevation
+    wavelength_midpoint = (band_def.end + band_def.start) / 2.0
+    for wavelength in wavelength_iterator(band_def, use_midpoint=True):
+        # Note that refract_amp can be negative, since it's relative to the midpoint of the band
+        refract_amp = diff_refraction(wavelength=wavelength, wavelength_ref=wavelength_midpoint,
+                                      zenith_angle=zenith_angle, **kwargs)
+        refract_amp *= 3600.0 / pixel_scale  # Refraction initially in degrees, convert to pixels.
+        dx = refract_amp * np.sin(np.radians(azimuth))
+        dy = refract_amp * np.cos(np.radians(azimuth))
+        print("Dx: ", dx, " | Dy: ", dy)
+        yield((dx, dy))
 
 
 def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None, **kwargs):
@@ -194,14 +214,17 @@ class BandDefine:
         self.n_step = int(np.ceil((band_range[1] - band_range[0]) / step))
 
 
-def wavelength_iterator(band_def):
+def wavelength_iterator(band_def, use_midpoint=False):
     """Define iterator to ensure that loops over wavelength are consistent."""
     wave_start = band_def.start
     while wave_start < band_def.end:
         wave_end = wave_start + band_def.step
         if wave_end > band_def.end:
             wave_end = band_def.end
-        yield((wave_start, wave_end))
+        if use_midpoint:
+            yield((wave_start + wave_end) / 2.0)
+        else:
+            yield((wave_start, wave_end))
         wave_start = wave_end
 
 
