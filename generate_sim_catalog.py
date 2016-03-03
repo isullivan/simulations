@@ -4,15 +4,17 @@ import lsst.afw.geom as afwGeom
 # import lsst.afw.image as afwImage
 import numpy as np
 from numpy.fft import fft2, ifft2, fftshift
-import math
+# import math
 from scipy import constants
 import galsim
 from fast_dft import fast_dft
 bbox_init = afwGeom.Box2I(afwGeom.PointI(0, 0), afwGeom.ExtentI(512, 512))
+photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
 
 
 def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=None, pad_image=1.1,
-              sky_noise=0.0, instrument_noise=0.0, dcr_flag=False, band_name='g', **kwargs):
+              sky_noise=0.0, instrument_noise=0.0, photon_noise=False,
+              dcr_flag=False, band_name='g', **kwargs):
     """Wrapper that takes a catalog of stars and simulates an image."""
     if catalog is None:
         catalog = cat_sim(bbox=bbox, name=name, **kwargs)
@@ -32,7 +34,7 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
         psf = galsim.Kolmogorov(fwhm=3)
     if pixel_scale is None:
         # I think most PSF classes have a getFWHM method. The math converts to a sigma for a gaussian.
-        fwhm_to_sigma = 1.0 / (2.0 * math.sqrt(2. * math.log(2)))
+        fwhm_to_sigma = 1.0 / (2.0 * np.sqrt(2. * np.log(2)))
         pixel_scale = psf.getFWHM() * fwhm_to_sigma
 
     fluxKey = schema.find(fluxName).key
@@ -50,7 +52,6 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
             flux_arr[_i, :] = np.array([f for f in star_spectrum])
     else:
         flux_arr = flux
-    print(band_def.n_step, flux_arr.shape)
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
 
@@ -78,11 +79,15 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
             source_image_use = source_image[_i]
             if sky_noise > 0:
                 source_image_use += (np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
-                                     / math.sqrt(band_def.n_step))
+                                     / np.sqrt(band_def.n_step))
             convol += fft2(source_image_use) * fft2(psf_image.array)
     else:
         psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=[0, 0],
                                   nx=x_size_use, ny=y_size_use, use_true_center=False)
+        if photon_noise:
+            base_noise = np.random.normal(scale=1.0, size=(y_size_use, x_size_use))
+            base_noise *= np.sqrt(np.abs(source_image) / photons_per_adu)
+            source_image += base_noise
         if sky_noise > 0:
             source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
         convol = fft2(source_image) * fft2(psf_image.array)
