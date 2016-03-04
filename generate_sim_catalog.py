@@ -74,8 +74,8 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     if dcr_flag:
         convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
         dcr_gen = dcr_generator(band_def, pixel_scale=pixel_scale, **kwargs)
-        for _i in range(band_def.n_step):
-            psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=dcr_gen.next(),
+        for _i, offset in enumerate(dcr_gen):
+            psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=offset,
                                       nx=x_size_use, ny=y_size_use, use_true_center=False)
             source_image_use = source_image[_i]
             if sky_noise > 0:
@@ -250,12 +250,16 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
     star_sort = rand_gen.uniform(0, max_prob, n_star)
     temperature = []
     luminosity = []
+    info_string = 'Number of stars of each type: ' + coolest_star
     for _i in range(n_star_type):
         inds = np.where((star_sort < star_prob[_i + 1]) * (star_sort > star_prob[_i]))
         inds = inds[0]  # np.where returns a tuple of two arrays
+        info_string += " " + str(len(inds))
         for ind in inds:
             temp_use = rand_gen.uniform(temperature_range[_i][0], temperature_range[_i][1])
             lum_use = rand_gen.uniform(luminosity_scale[_i][0], luminosity_scale[_i][1])
             temperature.append(temp_use)
             luminosity.append(lum_use)
+    info_string += " " + hottest_star
+    print(info_string)
     return((temperature, luminosity))
