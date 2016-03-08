@@ -2,8 +2,8 @@
 import lsst.afw.table as afwTable
 import lsst.afw.geom as afwGeom
 from lsst.utils import getPackageDir
-from lsst.sims.photUtils import Sed, Bandpass  # , PhotometricParameters
-from lsst.sims.photUtils import matchStar
+from lsst.sims.photUtils import Bandpass  # , Sed, PhotometricParameters
+# from lsst.sims.photUtils import matchStar
 # import lsst.afw.image as afwImage
 import numpy as np
 from numpy.fft import fft2, ifft2, fftshift
@@ -14,10 +14,11 @@ from calc_refractive_index import diff_refraction
 from fast_dft import fast_dft
 bbox_init = afwGeom.Box2I(afwGeom.PointI(0, 0), afwGeom.ExtentI(512, 512))
 photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
+from clocked_function import clocked_function
 
 
 def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=None, pad_image=1.1,
-              sky_noise=0.0, instrument_noise=0.0, photon_noise=False, wavelength_step=10,
+              sky_noise=0.0, instrument_noise=0.0, photon_noise=False,
               dcr_flag=False, band_name='g', sed_list=None, **kwargs):
     """Wrapper that takes a catalog of stars and simulates an image."""
     if catalog is None:
@@ -40,28 +41,44 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
         # I think most PSF classes have a getFWHM method. The math converts to a sigma for a gaussian.
         fwhm_to_sigma = 1.0 / (2.0 * np.sqrt(2. * np.log(2)))
         pixel_scale = psf.getFWHM() * fwhm_to_sigma
-
+    """
     if sed_list is None:
         # Load in model SEDs
         matchStarObj = matchStar()
         sed_list = matchStarObj.loadKuruczSEDs()
-
+    """
     fluxKey = schema.find(fluxName).key
     temperatureKey = schema.find("temperature").key
+    metalKey = schema.find("metallicity").key
+    gravityKey = schema.find("gravity").key
     x0, y0 = bbox.getBegin()
     # if catalog.isContiguous()
     flux = catalog[fluxKey]
     temperatures = catalog[temperatureKey]
+    metallicities = catalog[metalKey]
+    gravities = catalog[gravityKey]
     if dcr_flag:
-        flux_arr = np.ndarray((n_star, bandpass_nstep(bandpass, wavelength_step=wavelength_step)))
+        flux_arr = np.zeros((n_star, bandpass_nstep(bandpass)))
         for _i in range(n_star):
             f_star = flux[_i]
             t_star = temperatures[_i]
-            star_spectrum = star_gen(sed_list=sed_list, temperature=t_star, flux=f_star,
-                                     bandpass=bandpass, wavelength_step=wavelength_step)
-            flux_arr[_i, :] = np.array([f for f in star_spectrum])
+            z_star = metallicities[_i]
+            g_star = gravities[_i]
+            star_spectrum = star_gen(sed_list=sed_list, temperature=t_star, flux=f_star, bandpass=bandpass,
+                                     metallicity=z_star, surface_gravity=g_star)
+            flux_arr[_i, :] = np.array([flux_val for flux_val in star_spectrum])
     else:
-        flux_arr = flux
+        flux_arr = np.zeros(n_star)
+        for _i in range(n_star):
+            f_star = flux[_i]
+            t_star = temperatures[_i]
+            z_star = metallicities[_i]
+            g_star = gravities[_i]
+            star_spectrum = star_gen(sed_list=sed_list, temperature=t_star, flux=f_star, bandpass=bandpass,
+                                     metallicity=z_star, surface_gravity=g_star)
+            flux_single = np.array([flux_val for flux_val in star_spectrum])
+            flux_arr[_i] = np.sum(flux_single)
+        # flux_arr = flux
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
 
@@ -81,15 +98,16 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     source_image = fast_dft(flux_arr, xv, yv, x_size=x_size_use, y_size=y_size_use, no_fft=True)
 
     if dcr_flag:
+        print("Number of DCR planes: ", bandpass_nstep(bandpass))
         convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
-        dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale, wavelength_step=wavelength_step, **kwargs)
+        dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale, **kwargs)
         for _i, offset in enumerate(dcr_gen):
             psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=offset,
                                       nx=x_size_use, ny=y_size_use, use_true_center=False)
             source_image_use = source_image[_i]
             if sky_noise > 0:
                 source_image_use += (np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
-                                     / np.sqrt(bandpass_nstep(bandpass, wavelength_step=wavelength_step)))
+                                     / np.sqrt(bandpass_nstep(bandpass)))
             convol += fft2(source_image_use) * fft2(psf_image.array)
     else:
         psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=[0, 0],
@@ -110,15 +128,12 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     return(return_image[y0:y1, x0:x1])
 
 
-def bandpass_nstep(bandpass, wavelength_step=None):
+def bandpass_nstep(bandpass):
     """Simple function to pre-compute the number of bins to use for a given bandpass."""
-    if wavelength_step is None:
-        wavelength_step = bandpass.wavelen_step
-    return(int(np.ceil((bandpass.wavelen_max - bandpass.wavelen_min) / wavelength_step)))
+    return(int(np.ceil((bandpass.wavelen_max - bandpass.wavelen_min) / bandpass.wavelen_step)))
 
 
-def dcr_generator(bandpass, pixel_scale=None, elevation=None, azimuth=None,
-                  wavelength_step=None, **kwargs):
+def dcr_generator(bandpass, pixel_scale=None, elevation=None, azimuth=None, **kwargs):
     """Call the functions that compute Differential Chromatic Refraction."""
     if elevation is None:
         elevation = 50.0
@@ -126,7 +141,7 @@ def dcr_generator(bandpass, pixel_scale=None, elevation=None, azimuth=None,
         azimuth = 0.0
     zenith_angle = 90.0 - elevation
     wavelength_midpoint = bandpass.calc_eff_wavelen()
-    for wavelength in wavelength_iterator(bandpass, wavelength_step=wavelength_step, use_midpoint=True):
+    for wavelength in wavelength_iterator(bandpass, use_midpoint=True):
         # Note that refract_amp can be negative, since it's relative to the midpoint of the band
         refract_amp = diff_refraction(wavelength=wavelength, wavelength_ref=wavelength_midpoint,
                                       zenith_angle=zenith_angle, **kwargs)
@@ -136,7 +151,7 @@ def dcr_generator(bandpass, pixel_scale=None, elevation=None, azimuth=None,
         yield((dx, dy))
 
 
-def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None, **kwargs):
+def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, edge_distance=10, name=None, **kwargs):
     """Wrapper function that generates a semi-realistic catalog of stars."""
     schema = afwTable.SourceTable.makeMinimalSchema()
     if name is None:
@@ -153,17 +168,18 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None, **kwarg
     schema.addField("spectral_id", type="D")
     schema.addField("metallicity", type="D")
     schema.addField("gravity", type="D")
+    schema.addField("sed", type="D")
     schema.addField("dust", type="D")
     schema.getAliasMap().set('slot_Centroid', name + '_Centroid')
 
     x_size, y_size = bbox.getDimensions()
     x0, y0 = bbox.getBegin()
-    temperature, luminosity = stellar_distribution(seed=seed, n_star=n_star, **kwargs)
+    temperature, luminosity, metallicity, surface_gravity = stellar_distribution(seed=seed, n_star=n_star, **kwargs)
     rand_gen = np.random
     if seed is not None:
         rand_gen.seed(seed + 1)  # ensure that we use a different seed than stellar_distribution.
-    x = rand_gen.uniform(x0, x0 + x_size, n_star)
-    y = rand_gen.uniform(y0, y0 + y_size, n_star)
+    x = rand_gen.uniform(x0 + edge_distance, x0 + x_size - edge_distance, n_star)
+    y = rand_gen.uniform(y0 + edge_distance, y0 + y_size - edge_distance, n_star)
     flux = luminosity * np.abs(np.random.normal(scale=1e4, size=n_star) / 100.)
 
     catalog = afwTable.SourceCatalog(schema)
@@ -171,6 +187,8 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None, **kwarg
     flagKey = schema.find(flagName).key
     fluxSigmaKey = schema.find(fluxSigmaName).key
     temperatureKey = schema.find("temperature").key
+    metalKey = schema.find("metallicity").key
+    gravityKey = schema.find("gravity").key
     centroidKey = afwTable.Point2DKey(schema["slot_Centroid"])
     for _i in range(n_star):
         source_test_centroid = afwGeom.Point2D(x[_i], y[_i])
@@ -179,24 +197,63 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, name=None, **kwarg
         source.set(centroidKey, source_test_centroid)
         source.set(fluxSigmaKey, 0.)
         source.set(temperatureKey, temperature[_i])
+        source.set(metalKey, metallicity[_i])
+        source.set(gravityKey, surface_gravity[_i])
         source.set(flagKey, False)
     return(catalog.copy(True))  # Return a copy to make sure it is contiguous in memory.
 
 
 def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surface_gravity=1.0,
-             flux=1.0, bandpass=None, wavelength_step=None):
+             flux=1.0, bandpass=None):
     """Generate a randomized spectrum at a given temperature over a range of wavelengths."""
     """
         Either use a supplied list of SEDs to be drawn from, or use a blackbody radiation model.
         The output is normalized to sum to the given flux.
         [future] If a seed is supplied, noise can be added to the final spectrum before normalization.
     """
-    if sed_list is not None:
+    def integral(generator):
+        """Simple wrapper to make the math more apparent."""
+        return(np.sum(var for var in generator))
+    if sed_list is None:
+        t_ref = [np.Inf, 0.0]
+    else:
         temperature_list = [star.temp for star in sed_list]
-        grav_list = [star.logg for star in sed_list]
-        metal_list = [star.logZ for star in sed_list]
-        temp_weight = (temperature_list - temperature) / temperature
-        t_inds = np.where(temp_weight <= np.min(temp_weight))
+        t_ref = [np.min(temperature_list), np.max(temperature_list)]
+
+    bp_wavelen, bandpass_vals = bandpass.getBandpass()
+    bandpass_gen = (bp for bp in bandpass_vals)
+    bandpass_gen2 = (bp2 for bp2 in bandpass_vals)
+    if temperature >= t_ref[0] and temperature <= t_ref[1]:
+        temp_weight = [np.abs(t / temperature - 1.0) for t in temperature_list]
+        temp_thresh = np.min(temp_weight)
+        t_inds = np.where(temp_weight <= temp_thresh)
+        t_inds = t_inds[0]  # unpack tuple from np.where()
+        n_inds = len(t_inds)
+        if n_inds > 1:
+            grav_list = [sed_list[_i].logg for _i in t_inds]
+            metal_list = [sed_list[_i].logZ for _i in t_inds]
+            offset = 10.0  # Add an offset to the values to prevent dividing by zero
+            grav_weight = (((grav + offset) / (surface_gravity + offset) - 1.0)**2 for grav in grav_list)
+            metal_weight = (((metal + offset) / (metallicity + offset) - 1.0)**2 for metal in metal_list)
+            composite_weight = [grav + metal for (grav, metal) in zip(grav_weight, metal_weight)]
+            sed_i = t_inds[np.argmin(composite_weight)]
+        else:
+            sed_i = t_inds[0]
+        # sed = sed_list[sed_i]
+        # normalization = flux / sed_list[sed_i].calcFlux(bandpass)
+        sed_integral = 0.0
+
+        def sed_integrate(sed=sed_list[sed_i], wave_start=None, wave_end=None):
+            wavelengths = sed.wavelen
+            flambdas = sed.flambda
+            return(integral((flambdas[_i] for _i in range(len(flambdas))
+                   if wavelengths[_i] >= wave_start and wavelengths[_i] < wave_end)))
+
+        for wave_start, wave_end in wavelength_iterator(bandpass):
+            sed_integral += next(bandpass_gen2) * sed_integrate(wave_start=wave_start, wave_end=wave_end)
+        flux_norm = flux / sed_integral
+        for wave_start, wave_end in wavelength_iterator(bandpass):
+            yield(flux_norm * next(bandpass_gen) * sed_integrate(wave_start=wave_start, wave_end=wave_end))
 
     else:
         h = constants.Planck
@@ -211,27 +268,28 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
                 exp_term = np.exp(-n * x)
                 yield(poly_term * exp_term)
 
-        def integral(generator):
-            """Simple wrapper to make the math more apparent."""
-            return(np.sum(var for var in generator))
-
-        def radiance_calc(temperature, wavelength_start, wavelength_end, nterms=3):
+        def radiance_calc(temperature, wavelength_start, wavelength_end, norm=1.0, nterms=3):
             nu1 = c / (wavelength_start / 1E9)
             nu2 = c / (wavelength_end / 1E9)
             x1 = h * nu1 / (kb * temperature)
             x2 = h * nu2 / (kb * temperature)
             radiance1 = radiance_expansion(x1, nterms)
             radiance2 = radiance_expansion(x2, nterms)
-            radiance_integral1 = prefactor * integral(radiance1)
-            radiance_integral2 = prefactor * integral(radiance2)
+            radiance_integral1 = norm * prefactor * integral(radiance1)
+            radiance_integral2 = norm * prefactor * integral(radiance2)
             return(radiance_integral1 - radiance_integral2)
 
-        normalization = flux / radiance_calc(temperature, bandpass.wavelen_min, bandpass.wavelen_max)
-        for wave_start, wave_end in wavelength_iterator(bandpass, wavelength_step=wavelength_step):
-            yield(normalization * radiance_calc(temperature, wave_start, wave_end))
+        radiance_integral = 0.0
+        for wave_start, wave_end in wavelength_iterator(bandpass):
+            radiance_integral += radiance_calc(temperature, wave_start, wave_end, norm=bandpass_gen2.next())
+        flux_norm = flux / radiance_integral
+        # flux_norm = flux / radiance_calc(temperature, bandpass.wavelen_min, bandpass.wavelen_max,
+        #                                 norm=np.mean(bandpass_vals))
+        for wave_start, wave_end in wavelength_iterator(bandpass):
+            yield(flux_norm * radiance_calc(temperature, wave_start, wave_end, norm=bandpass_gen.next()))
 
 
-def load_bandpass(band_name='g', use_mirror=True, use_lens=True, use_atmos=True,
+def load_bandpass(band_name='g', wavelength_step=None, use_mirror=True, use_lens=True, use_atmos=True,
                   use_filter=True, use_detector=True, **kwargs):
     """Load in Bandpass object."""
     class BandpassMod(Bandpass):
@@ -255,7 +313,7 @@ def load_bandpass(band_name='g', use_mirror=True, use_lens=True, use_atmos=True,
     band_dict = {'u': (324.0, 395.0), 'g': (405.0, 552.0), 'r': (552.0, 691.0),
                  'i': (818.0, 921.0), 'z': (922.0, 997.0), 'y': (975.0, 1075.0)}
     band_range = band_dict[band_name]
-    bandpass = BandpassMod(wavelen_min=band_range[0], wavelen_max=band_range[1])
+    bandpass = BandpassMod(wavelen_min=band_range[0], wavelen_max=band_range[1], wavelen_step=wavelength_step)
     throughput_dir = getPackageDir('throughputs')
     lens_list = ['baseline/lens1.dat', 'baseline/lens2.dat', 'baseline/lens3.dat']
     mirror_list = ['baseline/m1.dat', 'baseline/m2.dat', 'baseline/m3.dat']
@@ -274,16 +332,17 @@ def load_bandpass(band_name='g', use_mirror=True, use_lens=True, use_atmos=True,
     if use_filter:
         component_list += filter_list
     bandpass.readThroughputList(rootDir=throughput_dir, componentList=component_list)
+    # Calculate bandpass phi value if required.
+    if bandpass.phi is None:
+        bandpass.sbTophi()
     return(bandpass)
 
 
-def wavelength_iterator(bandpass, wavelength_step=None, use_midpoint=False):
+def wavelength_iterator(bandpass, use_midpoint=False):
     """Define iterator to ensure that loops over wavelength are consistent."""
-    if wavelength_step is None:
-        wavelength_step = bandpass.wavelen_step
     wave_start = bandpass.wavelen_min
     while wave_start < bandpass.wavelen_max:
-        wave_end = wave_start + wavelength_step
+        wave_end = wave_start + bandpass.wavelen_step
         if wave_end > bandpass.wavelen_max:
             wave_end = bandpass.wavelen_max
         if use_midpoint:
@@ -300,8 +359,8 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
                         (30000.0, 50000.0)]  # hotter stars are brighter on average.
     temperature_range = [(2400, 3700), (3700, 5200), (5200, 6000), (6000, 7500), (7500, 10000),
                          (10000, 30000), (30000, 50000)]
-    metallicity_range = [(-5.0, 1.0)] * len(star_prob)
-    surface_gravity_range = [(0.0, 5.0)] * len(star_prob)
+    metallicity_range = [(-3.0, 0.5)] * len(star_prob)
+    surface_gravity_range = [(_i, _i + 1) for _i in range(5)]  # really naive assumption that 
     star_type = {'M': 0, 'K': 1, 'G': 2, 'F': 3, 'A': 4, 'B': 5, 'O': 6}
     s_hot = star_type[hottest_star] + 1
     s_cool = star_type[coolest_star]
@@ -338,25 +397,4 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
             surface_gravity.append(grav_use)
     info_string += " " + hottest_star
     print(info_string)
-    return((temperature, luminosity))
-
-"""
-def sim_sed_read():
-    "Simple function that reads in the filenames in the sims_sed_library and extracts values."
-    sed_dir = os.path.join(getPackageDir('sims_sed_library'), 'starSED', 'kurucz')
-    list_of_star_sed_names = os.listdir(sed_dir)
-    metallicity_list = []
-    temperature_list = []
-    gravity_list = []
-    for name in list_of_star_sed_names:
-        log_metallicity = float(name[2:4])
-        sign_metallicity = name[1]
-        if sign_metallicity == 'm':
-            log_metallicity *= -1
-        metallicity_list.append(log_metallicity)
-        temperature = float(name[19:23])
-        temperature_list.append(temperature)
-        surface_gravity = float(name[16:18])
-        gravity_list.append(surface_gravity)
-    return(temperature_list, gravity_list, metallicity_list)
-"""
+    return((temperature, luminosity, metallicity, surface_gravity))
