@@ -14,7 +14,6 @@ from calc_refractive_index import diff_refraction
 from fast_dft import fast_dft
 bbox_init = afwGeom.Box2I(afwGeom.PointI(0, 0), afwGeom.ExtentI(512, 512))
 photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
-from clocked_function import clocked_function
 
 
 def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=None, pad_image=1.1,
@@ -359,8 +358,9 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
                         (30000.0, 50000.0)]  # hotter stars are brighter on average.
     temperature_range = [(2400, 3700), (3700, 5200), (5200, 6000), (6000, 7500), (7500, 10000),
                          (10000, 30000), (30000, 50000)]
-    metallicity_range = [(-3.0, 0.5)] * len(star_prob)
-    surface_gravity_range = [(_i, _i + 1) for _i in range(5)]  # really naive assumption that 
+    metallicity_range = [(-3.0, 0.5)] * len(star_prob)  # Assign a random log metallicity to each star.
+    surface_gravity_range = [(0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.5, 2.0),
+                             (1.0, 2.5), (2.0, 4.0), (3.0, 5.0)]
     star_type = {'M': 0, 'K': 1, 'G': 2, 'F': 3, 'A': 4, 'B': 5, 'O': 6}
     s_hot = star_type[hottest_star] + 1
     s_cool = star_type[coolest_star]
