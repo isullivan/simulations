@@ -1,24 +1,25 @@
 """Function to generate simulated catalogs with reproduceable source spectra to feed into fast_dft."""
-import lsst.afw.table as afwTable
-import lsst.afw.geom as afwGeom
-from lsst.utils import getPackageDir
-from lsst.sims.photUtils import Bandpass  # , Sed, PhotometricParameters
-# from lsst.sims.photUtils import matchStar
-# import lsst.afw.image as afwImage
+from __future__ import print_function, division, absolute_import
 import numpy as np
 from numpy.fft import fft2, ifft2, fftshift
-# import math
 from scipy import constants
-import galsim
+import lsst.afw.geom as afwGeom
+import lsst.afw.table as afwTable
+from lsst.sims.photUtils import Bandpass  # , Sed, PhotometricParameters
+from lsst.utils import getPackageDir
+# import galsim
+# from lsst.sims.photUtils import matchStar
+# import lsst.afw.image as afwImage
 from calc_refractive_index import diff_refraction
 from fast_dft import fast_dft
-bbox_init = afwGeom.Box2I(afwGeom.PointI(0, 0), afwGeom.ExtentI(512, 512))
+from clocked_function import clocked_function
 photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
 
 
-def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=None, pad_image=1.1,
+def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pad_image=1.0,
               sky_noise=0.0, instrument_noise=0.0, photon_noise=False,
-              dcr_flag=False, band_name='g', sed_list=None, **kwargs):
+              dcr_flag=False, band_name='g', sed_list=None,
+              astrometric_error=None, **kwargs):
     """Wrapper that takes a catalog of stars and simulates an image."""
     if catalog is None:
         catalog = cat_sim(bbox=bbox, name=name, **kwargs)
@@ -33,9 +34,10 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
         fluxName = schema_entry.iterkeys().next()
     else:
         fluxName = name + '_flux'
-
+    """
     if psf is None:
         psf = galsim.Kolmogorov(fwhm=3)
+    """
     if pixel_scale is None:
         # I think most PSF classes have a getFWHM method. The math converts to a sigma for a gaussian.
         fwhm_to_sigma = 1.0 / (2.0 * np.sqrt(2. * np.log(2)))
@@ -56,28 +58,18 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     temperatures = catalog[temperatureKey]
     metallicities = catalog[metalKey]
     gravities = catalog[gravityKey]
-    if dcr_flag:
-        flux_arr = np.zeros((n_star, bandpass_nstep(bandpass)))
-        for _i in range(n_star):
-            f_star = flux[_i]
-            t_star = temperatures[_i]
-            z_star = metallicities[_i]
-            g_star = gravities[_i]
-            star_spectrum = star_gen(sed_list=sed_list, temperature=t_star, flux=f_star, bandpass=bandpass,
-                                     metallicity=z_star, surface_gravity=g_star)
-            flux_arr[_i, :] = np.array([flux_val for flux_val in star_spectrum])
-    else:
-        flux_arr = np.zeros(n_star)
-        for _i in range(n_star):
-            f_star = flux[_i]
-            t_star = temperatures[_i]
-            z_star = metallicities[_i]
-            g_star = gravities[_i]
-            star_spectrum = star_gen(sed_list=sed_list, temperature=t_star, flux=f_star, bandpass=bandpass,
-                                     metallicity=z_star, surface_gravity=g_star)
-            flux_single = np.array([flux_val for flux_val in star_spectrum])
-            flux_arr[_i] = np.sum(flux_single)
-        # flux_arr = flux
+    flux_arr = np.zeros((n_star, bandpass_nstep(bandpass)))
+
+    for _i in range(n_star):
+        f_star = flux[_i]
+        t_star = temperatures[_i]
+        z_star = metallicities[_i]
+        g_star = gravities[_i]
+        star_spectrum = star_gen(sed_list=sed_list, temperature=t_star, flux=f_star, bandpass=bandpass,
+                                 metallicity=z_star, surface_gravity=g_star)
+        flux_arr[_i, :] = np.array([flux_val for flux_val in star_spectrum])
+    if not dcr_flag:
+        flux_arr = np.sum(flux_arr, axis=1)
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
 
@@ -94,7 +86,11 @@ def cat_image(catalog=None, bbox=bbox_init, name=None, psf=None, pixel_scale=Non
     xv += x0
     yv += y0
 
-    source_image = fast_dft(flux_arr, xv, yv, x_size=x_size_use, y_size=y_size_use, no_fft=True)
+    @clocked_function
+    def fast_dft_clocked(*args, **kwargs):
+        return(fast_dft(*args, **kwargs))
+
+    source_image = fast_dft_clocked(flux_arr, xv, yv, x_size=x_size_use, y_size=y_size_use, no_fft=True)
 
     if dcr_flag:
         print("Number of DCR planes: ", bandpass_nstep(bandpass))
@@ -173,7 +169,11 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, edge_distance=10, 
 
     x_size, y_size = bbox.getDimensions()
     x0, y0 = bbox.getBegin()
-    temperature, luminosity, metallicity, surface_gravity = stellar_distribution(seed=seed, n_star=n_star, **kwargs)
+    star_properties = stellar_distribution(seed=seed, n_star=n_star, **kwargs)
+    temperature = star_properties[0]
+    luminosity = star_properties[1]
+    metallicity = star_properties[2]
+    surface_gravity = star_properties[3]
     rand_gen = np.random
     if seed is not None:
         rand_gen.seed(seed + 1)  # ensure that we use a different seed than stellar_distribution.
@@ -290,7 +290,7 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
 
 def load_bandpass(band_name='g', wavelength_step=None, use_mirror=True, use_lens=True, use_atmos=True,
                   use_filter=True, use_detector=True, **kwargs):
-    """Load in Bandpass object."""
+    """Load in Bandpass object from sims_photUtils."""
     class BandpassMod(Bandpass):
         """Customize a few methods of the Bandpass class from sims_photUtils."""
 
@@ -352,7 +352,7 @@ def wavelength_iterator(bandpass, use_midpoint=False):
 
 
 def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star='M', **kwargs):
-    """Function that attempts to return a realistic distribution of temperatures and luminosity scales."""
+    """Function that attempts to return a realistic distribution of stellar properties."""
     star_prob = [76.45, 12.1, 7.6, 3, 0.6, 0.13, 3E-5]
     luminosity_scale = [(0.01, 0.08), (0.08, 0.6), (0.6, 1.5), (1.5, 5.0), (5.0, 25.0), (25.0, 30000.0),
                         (30000.0, 50000.0)]  # hotter stars are brighter on average.
