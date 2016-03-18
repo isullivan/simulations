@@ -19,10 +19,26 @@ photons_per_adu = 1e4  # used only to approximate the effect of photon shot nois
 def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pad_image=1.0,
               sky_noise=0.0, instrument_noise=0.0, photon_noise=False,
               dcr_flag=False, band_name='g', sed_list=None,
-              astrometric_error=None, **kwargs):
+              astrometric_error=None, edge_dist=None, **kwargs):
     """Wrapper that takes a catalog of stars and simulates an image."""
+
+    """
+    if psf is None:
+        psf = galsim.Kolmogorov(fwhm=3)
+    """
+    # I think most PSF classes have a getFWHM method. The math converts to a sigma for a gaussian.
+    fwhm_to_sigma = 1.0 / (2.0 * np.sqrt(2. * np.log(2)))
+    if pixel_scale is None:
+        pixel_scale = psf.getFWHM() * fwhm_to_sigma
+    if edge_dist is None:
+        if pad_image > 1:
+            edge_dist = 0
+        else:
+            edge_dist = 5 * psf.getFWHM() * fwhm_to_sigma / pixel_scale
+    kernel_radius = np.ceil(5 * psf.getFWHM() * fwhm_to_sigma / pixel_scale)
+    print("Kernel radius used: ", kernel_radius)
     if catalog is None:
-        catalog = cat_sim(bbox=bbox, name=name, **kwargs)
+        catalog = cat_sim(bbox=bbox, name=name, edge_dist=edge_dist, **kwargs)
     schema = catalog.getSchema()
     n_star = len(catalog)
     bandpass = load_bandpass(band_name=band_name, **kwargs)
@@ -34,14 +50,6 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
         fluxName = schema_entry.iterkeys().next()
     else:
         fluxName = name + '_flux'
-    """
-    if psf is None:
-        psf = galsim.Kolmogorov(fwhm=3)
-    """
-    if pixel_scale is None:
-        # I think most PSF classes have a getFWHM method. The math converts to a sigma for a gaussian.
-        fwhm_to_sigma = 1.0 / (2.0 * np.sqrt(2. * np.log(2)))
-        pixel_scale = psf.getFWHM() * fwhm_to_sigma
     """
     if sed_list is None:
         # Load in model SEDs
@@ -73,6 +81,9 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
 
+    cat_sigma = np.std(flux_arr[flux_arr - np.median(flux_arr) < 3.0 * np.std(flux_arr)])
+    flux_cut = flux_arr[flux_arr - np.median(flux_arr) > 3.0 * cat_sigma]
+
     if pad_image > 1:
         x_size_use = int(x_size * pad_image)
         y_size_use = int(y_size * pad_image)
@@ -90,7 +101,8 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     def fast_dft_clocked(*args, **kwargs):
         return(fast_dft(*args, **kwargs))
 
-    source_image = fast_dft_clocked(flux_arr, xv, yv, x_size=x_size_use, y_size=y_size_use, no_fft=True)
+    source_image = fast_dft_clocked(flux_arr, xv, yv, x_size=x_size_use, y_size=y_size_use,
+                                    kernel_radius=kernel_radius, **kwargs)
 
     if dcr_flag:
         print("Number of DCR planes: ", bandpass_nstep(bandpass))
