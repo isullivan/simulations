@@ -12,7 +12,9 @@ from lsst.utils import getPackageDir
 # import lsst.afw.image as afwImage
 from calc_refractive_index import diff_refraction
 from fast_dft import fast_dft
+from grid_star import grid_star
 from clocked_function import clocked_function
+import time
 photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
 
 
@@ -36,7 +38,7 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
         else:
             edge_dist = 5 * psf.getFWHM() * fwhm_to_sigma / pixel_scale
     kernel_radius = np.ceil(5 * psf.getFWHM() * fwhm_to_sigma / pixel_scale)
-    print("Kernel radius used: ", kernel_radius)
+    # print("Kernel radius used: ", kernel_radius)
     if catalog is None:
         catalog = cat_sim(bbox=bbox, name=name, edge_dist=edge_dist, **kwargs)
     schema = catalog.getSchema()
@@ -76,13 +78,21 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
         star_spectrum = star_gen(sed_list=sed_list, temperature=t_star, flux=f_star, bandpass=bandpass,
                                  metallicity=z_star, surface_gravity=g_star)
         flux_arr[_i, :] = np.array([flux_val for flux_val in star_spectrum])
+    flux_tot = np.sum(flux_arr, axis=1)
+    cat_sigma = np.std(flux_tot[flux_tot - np.median(flux_tot) < 3.0 * np.std(flux_tot)])
+    i_bright = (np.where(flux_tot - np.median(flux_tot) > 3.0 * cat_sigma))[0]
+    n_bright = len(i_bright)
+    i_use = (np.where(flux_tot - np.median(flux_tot) <= 3.0 * cat_sigma))[0]
     if not dcr_flag:
-        flux_arr = np.sum(flux_arr, axis=1)
+        flux_arr = flux_tot
+        flux_bright = flux_arr[i_bright]
+        flux_arr = flux_arr[i_use]
+    else:
+        flux_bright = flux_arr[i_bright, :]
+        flux_arr = flux_arr[i_use, :]
+
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
-
-    cat_sigma = np.std(flux_arr[flux_arr - np.median(flux_arr) < 3.0 * np.std(flux_arr)])
-    flux_cut = flux_arr[flux_arr - np.median(flux_arr) > 3.0 * cat_sigma]
 
     if pad_image > 1:
         x_size_use = int(x_size * pad_image)
@@ -101,8 +111,8 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     def fast_dft_clocked(*args, **kwargs):
         return(fast_dft(*args, **kwargs))
 
-    source_image = fast_dft_clocked(flux_arr, xv, yv, x_size=x_size_use, y_size=y_size_use,
-                                    kernel_radius=kernel_radius, **kwargs)
+    source_image = fast_dft_clocked(flux_arr, xv[i_use], yv[i_use], x_size=x_size_use,
+                                    y_size=y_size_use, kernel_radius=kernel_radius, **kwargs)
 
     if dcr_flag:
         print("Number of DCR planes: ", bandpass_nstep(bandpass))
@@ -112,6 +122,10 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
             psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=offset,
                                       nx=x_size_use, ny=y_size_use, use_true_center=False)
             source_image_use = source_image[_i]
+            if photon_noise:
+                base_noise = np.random.normal(scale=1.0, size=(y_size_use, x_size_use))
+                base_noise *= np.sqrt(np.abs(source_image_use) / photons_per_adu)
+                source_image_use += base_noise
             if sky_noise > 0:
                 source_image_use += (np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
                                      / np.sqrt(bandpass_nstep(bandpass)))
@@ -126,13 +140,28 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
         if sky_noise > 0:
             source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
         convol = fft2(source_image) * fft2(psf_image.array)
-
-    # fft_filter = outer(hanning(y_size_use), hanning(x_size_use))
-    # convol *= fftshift(fft_filter)
     return_image = np.real(fftshift(ifft2(convol)))
     if instrument_noise > 0:
         return_image += np.random.normal(scale=instrument_noise, size=(y_size_use, x_size_use))
-    return(return_image[y0:y1, x0:x1])
+
+    bright_image = np.zeros((y_size, x_size))
+    if n_bright > 0:
+        t0 = time.time()
+        if dcr_flag:
+            dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale, **kwargs)
+            for _i, offset in enumerate(dcr_gen):
+                bright_image += grid_star(flux_bright[:, _i], xv[i_bright], yv[i_bright], offset=offset,
+                                          x_size=x_size, y_size=y_size, pixel_scale=pixel_scale, psf=psf)
+        else:
+            bright_image += grid_star(flux_bright, xv[i_bright], yv[i_bright], x_size=x_size, y_size=y_size,
+                                      pixel_scale=pixel_scale, psf=psf)
+        elapsed = time.time() - t0
+        print('Timing to directly model %s bright sources: [%0.4fs]' % (n_bright, elapsed))
+        if photon_noise:
+            base_noise = np.random.normal(scale=1.0, size=(y_size, x_size))
+            base_noise *= np.sqrt(np.abs(bright_image) / photons_per_adu)
+            bright_image += base_noise
+    return(return_image[y0:y1, x0:x1] + bright_image)
 
 
 def bandpass_nstep(bandpass):
