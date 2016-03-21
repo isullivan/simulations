@@ -12,8 +12,6 @@ from lsst.utils import getPackageDir
 # import lsst.afw.image as afwImage
 from calc_refractive_index import diff_refraction
 from fast_dft import fast_dft
-from grid_star import grid_star
-from clocked_function import clocked_function
 import time
 photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
 
@@ -40,7 +38,7 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     kernel_radius = np.ceil(5 * psf.getFWHM() * fwhm_to_sigma / pixel_scale)
     # print("Kernel radius used: ", kernel_radius)
     if catalog is None:
-        catalog = cat_sim(bbox=bbox, name=name, edge_dist=edge_dist, **kwargs)
+        catalog = cat_sim(bbox=bbox, name=name, edge_distance=edge_dist, **kwargs)
     schema = catalog.getSchema()
     n_star = len(catalog)
     bandpass = load_bandpass(band_name=band_name, **kwargs)
@@ -64,7 +62,7 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     gravityKey = schema.find("gravity").key
     x0, y0 = bbox.getBegin()
     # if catalog.isContiguous()
-    flux = catalog[fluxKey]
+    flux = catalog[fluxKey] / psf.getFlux()
     temperatures = catalog[temperatureKey]
     metallicities = catalog[metalKey]
     gravities = catalog[gravityKey]
@@ -82,86 +80,113 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     cat_sigma = np.std(flux_tot[flux_tot - np.median(flux_tot) < 3.0 * np.std(flux_tot)])
     i_bright = (np.where(flux_tot - np.median(flux_tot) > 3.0 * cat_sigma))[0]
     n_bright = len(i_bright)
-    i_use = (np.where(flux_tot - np.median(flux_tot) <= 3.0 * cat_sigma))[0]
+    i_faint = (np.where(flux_tot - np.median(flux_tot) <= 3.0 * cat_sigma))[0]
     if not dcr_flag:
         flux_arr = flux_tot
         flux_bright = flux_arr[i_bright]
-        flux_arr = flux_arr[i_use]
+        flux_arr = flux_arr[i_faint]
     else:
         flux_bright = flux_arr[i_bright, :]
-        flux_arr = flux_arr[i_use, :]
+        flux_arr = flux_arr[i_faint, :]
 
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
 
-    if pad_image > 1:
-        x_size_use = int(x_size * pad_image)
-        y_size_use = int(y_size * pad_image)
-    else:
-        x_size_use = int(x_size * pad_image)
-        y_size_use = int(y_size * pad_image)
-    x0 = (x_size_use - x_size) // 2
-    x1 = x0 + x_size
-    y0 = (y_size_use - y_size) // 2
-    y1 = y0 + y_size
-    xv += x0
-    yv += y0
-
-    @clocked_function
-    def fast_dft_clocked(*args, **kwargs):
-        return(fast_dft(*args, **kwargs))
-
-    source_image = fast_dft_clocked(flux_arr, xv[i_use], yv[i_use], x_size=x_size_use,
-                                    y_size=y_size_use, kernel_radius=kernel_radius, **kwargs)
-
     if dcr_flag:
         print("Number of DCR planes: ", bandpass_nstep(bandpass))
-        convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
-        dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale, **kwargs)
-        for _i, offset in enumerate(dcr_gen):
-            psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=offset,
-                                      nx=x_size_use, ny=y_size_use, use_true_center=False)
-            source_image_use = source_image[_i]
-            if photon_noise:
-                base_noise = np.random.normal(scale=1.0, size=(y_size_use, x_size_use))
-                base_noise *= np.sqrt(np.abs(source_image_use) / photons_per_adu)
-                source_image_use += base_noise
-            if sky_noise > 0:
-                source_image_use += (np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
-                                     / np.sqrt(bandpass_nstep(bandpass)))
-            convol += fft2(source_image_use) * fft2(psf_image.array)
+        faint_image = convolve_dcr_image(flux_arr, xv[i_faint], yv[i_faint],
+                                         bandpass=bandpass, x_size=x_size, y_size=y_size,
+                                         kernel_radius=kernel_radius,
+                                         psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                         photon_noise=photon_noise, sky_noise=sky_noise, **kwargs)
+        if n_bright > 0:
+            bright_image = convolve_dcr_image(flux_bright, xv[i_bright], yv[i_bright],
+                                              bandpass=bandpass, x_size=x_size, y_size=y_size,
+                                              kernel_radius=x_size, oversample_image=2.0,
+                                              psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                              photon_noise=photon_noise, sky_noise=0.0, **kwargs)
+
     else:
-        psf_image = psf.drawImage(scale=pixel_scale, method='no_pixel', offset=[0, 0],
+        faint_image = convolve_image(flux_arr, xv[i_faint], yv[i_faint],
+                                     x_size=x_size, y_size=y_size, kernel_radius=kernel_radius,
+                                     psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                     photon_noise=photon_noise, sky_noise=sky_noise, **kwargs)
+        if n_bright > 0:
+            bright_image = convolve_image(flux_bright, xv[i_bright], yv[i_bright],
+                                          x_size=x_size, y_size=y_size,
+                                          kernel_radius=x_size, oversample_image=2.0,
+                                          psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                          photon_noise=photon_noise, sky_noise=0.0, **kwargs)
+    return_image = bright_image + faint_image
+    if instrument_noise > 0:
+        return_image += np.random.normal(scale=instrument_noise, size=(y_size, x_size))
+    return(return_image)
+
+
+def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_size=None,
+                       psf=None, pad_image=1.5, pixel_scale=None, kernel_radius=None,
+                       oversample_image=1, photon_noise=False, sky_noise=0.0, **kwargs):
+    x_size_use = int(x_size * pad_image)
+    y_size_use = int(y_size * pad_image)
+    oversample_image = int(oversample_image)
+    pixel_scale_use = pixel_scale / oversample_image
+    x0 = oversample_image * ((x_size_use - x_size) // 2)
+    x1 = x0 + x_size * oversample_image
+    y0 = oversample_image * ((y_size_use - y_size) // 2)
+    y1 = y0 + y_size * oversample_image
+    x_loc_use = x_loc * oversample_image + x0
+    y_loc_use = y_loc * oversample_image + y0
+    x_size_use *= oversample_image
+    y_size_use *= oversample_image
+    source_image = fast_dft(flux_arr, x_loc_use, y_loc_use, x_size=x_size_use, y_size=y_size_use,
+                            kernel_radius=kernel_radius, **kwargs)
+    convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
+    dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale_use, **kwargs)
+    for _i, offset in enumerate(dcr_gen):
+        source_image_use = source_image[_i]
+
+        psf_image = psf.drawImage(scale=pixel_scale_use, method='fft', offset=offset,
                                   nx=x_size_use, ny=y_size_use, use_true_center=False)
         if photon_noise:
             base_noise = np.random.normal(scale=1.0, size=(y_size_use, x_size_use))
-            base_noise *= np.sqrt(np.abs(source_image) / photons_per_adu)
-            source_image += base_noise
+            base_noise *= np.sqrt(np.abs(source_image_use) / photons_per_adu)
+            source_image_use += base_noise
         if sky_noise > 0:
-            source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
-        convol = fft2(source_image) * fft2(psf_image.array)
+            source_image_use += (np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
+                                 / np.sqrt(bandpass_nstep(bandpass)))
+        convol += fft2(source_image_use) * fft2(psf_image.array)
     return_image = np.real(fftshift(ifft2(convol)))
-    if instrument_noise > 0:
-        return_image += np.random.normal(scale=instrument_noise, size=(y_size_use, x_size_use))
+    return(return_image[y0:y1:oversample_image, x0:x1:oversample_image] * oversample_image**2)
 
-    bright_image = np.zeros((y_size, x_size))
-    if n_bright > 0:
-        t0 = time.time()
-        if dcr_flag:
-            dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale, **kwargs)
-            for _i, offset in enumerate(dcr_gen):
-                bright_image += grid_star(flux_bright[:, _i], xv[i_bright], yv[i_bright], offset=offset,
-                                          x_size=x_size, y_size=y_size, pixel_scale=pixel_scale, psf=psf)
-        else:
-            bright_image += grid_star(flux_bright, xv[i_bright], yv[i_bright], x_size=x_size, y_size=y_size,
-                                      pixel_scale=pixel_scale, psf=psf)
-        elapsed = time.time() - t0
-        print('Timing to directly model %s bright sources: [%0.4fs]' % (n_bright, elapsed))
-        if photon_noise:
-            base_noise = np.random.normal(scale=1.0, size=(y_size, x_size))
-            base_noise *= np.sqrt(np.abs(bright_image) / photons_per_adu)
-            bright_image += base_noise
-    return(return_image[y0:y1, x0:x1] + bright_image)
+
+def convolve_image(flux_arr, x_loc, y_loc, x_size=None, y_size=None,
+                   psf=None, pad_image=1.5, pixel_scale=None, kernel_radius=None,
+                   oversample_image=1, photon_noise=False, sky_noise=0.0, **kwargs):
+    x_size_use = int(x_size * pad_image)
+    y_size_use = int(y_size * pad_image)
+    oversample_image = int(oversample_image)
+    pixel_scale_use = pixel_scale / oversample_image
+    x0 = oversample_image * ((x_size_use - x_size) // 2)
+    x1 = x0 + x_size * oversample_image
+    y0 = oversample_image * ((y_size_use - y_size) // 2)
+    y1 = y0 + y_size * oversample_image
+    x_loc_use = x_loc * oversample_image + x0
+    y_loc_use = y_loc * oversample_image + y0
+    x_size_use *= oversample_image
+    y_size_use *= oversample_image
+    source_image = fast_dft(flux_arr, x_loc_use, y_loc_use, x_size=x_size_use, y_size=y_size_use,
+                            kernel_radius=kernel_radius, **kwargs)
+    psf_image = psf.drawImage(scale=pixel_scale_use, method='fft', offset=[0, 0],
+                              nx=x_size_use, ny=y_size_use, use_true_center=False)
+    if photon_noise:
+        base_noise = np.random.normal(scale=1.0, size=(y_size_use, x_size_use))
+        base_noise *= np.sqrt(np.abs(source_image) / photons_per_adu)
+        source_image += base_noise
+    if sky_noise > 0:
+        source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
+    convol = fft2(source_image) * fft2(psf_image.array)
+    return_image = np.real(fftshift(ifft2(convol)))
+    return(return_image[y0:y1:oversample_image, x0:x1:oversample_image] * oversample_image**2)
 
 
 def bandpass_nstep(bandpass):

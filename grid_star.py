@@ -2,7 +2,8 @@ from __future__ import division
 import numpy as np
 
 
-def grid_star(amplitudes, x_loc, y_loc, x_size=None, y_size=None, psf=None, pixel_scale=None, offset=None):
+def grid_star(amplitudes, x_loc, y_loc, x_size=None, y_size=None, psf=None, pixel_scale=None,
+              offset=None, photons_per_adu=1e4):
 
     amplitudes = input_type_check(amplitudes)
     x_loc = input_type_check(x_loc)
@@ -19,8 +20,8 @@ def grid_star(amplitudes, x_loc, y_loc, x_size=None, y_size=None, psf=None, pixe
 
     for amp in amplitudes:
         psf_src = psf.drawImage(scale=pixel_scale, method='fft', offset=next(offset_gen),
-                                use_true_center=False, nx=x_size, ny=y_size, gain=1.0 / amp)
-        model_image += psf_src.array
+                                use_true_center=True, nx=x_size, ny=y_size)
+        model_image += amp * psf_src.array
     return(model_image)
 
 

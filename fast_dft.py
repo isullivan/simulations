@@ -22,6 +22,10 @@ def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, ke
 
     if y_size is None:
         y_size = x_size
+    if pi * kernel_radius**2.0 >= x_size * y_size / 4.0:
+        full_flag = True
+    else:
+        full_flag = False
 
     def kernel_1d(locs, size):
         pix = np.arange(size, dtype=np.float64)
@@ -81,29 +85,33 @@ def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, ke
             kernel_x = next(kernel_x_gen)
             kernel_y = next(kernel_y_gen)
             kernel_single = np.outer(kernel_y, kernel_x)
-            x_c = next(x_pix)
-            y_c = next(y_pix)
-            x0 = x_c - kernel_radius
-            if x0 < 0:
-                x0 = 0
-            x1 = x_c + kernel_radius
-            if x1 > x_size:
-                x1 = x_size
-            y0 = y_c - kernel_radius
-            if y0 < 0:
-                y0 = 0
-            y1 = y_c + kernel_radius
-            if y1 > y_size:
-                y1 = y_size
-            kernel_single[y0:y1, x0:x1] = kernel_single[y0:y1, x0:x1] / 2.0
-            x_i = next(kernel_ind_gen)
-            y_i = next(kernel_ind_gen)
-            taper = next(kernel_ind_gen)
-            for c_i, model in enumerate(model_img):
-                model[y0:y1, :] += amp[c_i] * kernel_single[y0:y1, :]
-                model[:, x0:x1] += amp[c_i] * kernel_single[:, x0:x1]
-                if len(y_i) > 0:
-                    model[y_i, x_i] += amp[c_i] * kernel_single[y_i, x_i] * taper
+            if full_flag:
+                for c_i, model in enumerate(model_img):
+                    model += amp[c_i] * kernel_single
+            else:
+                x_c = next(x_pix)
+                y_c = next(y_pix)
+                x0 = x_c - kernel_radius
+                if x0 < 0:
+                    x0 = 0
+                x1 = x_c + kernel_radius
+                if x1 > x_size:
+                    x1 = x_size
+                y0 = y_c - kernel_radius
+                if y0 < 0:
+                    y0 = 0
+                y1 = y_c + kernel_radius
+                if y1 > y_size:
+                    y1 = y_size
+                kernel_single[y0:y1, x0:x1] = kernel_single[y0:y1, x0:x1] / 2.0
+                x_i = next(kernel_ind_gen)
+                y_i = next(kernel_ind_gen)
+                taper = next(kernel_ind_gen)
+                for c_i, model in enumerate(model_img):
+                    model[y0:y1, :] += amp[c_i] * kernel_single[y0:y1, :]
+                    model[:, x0:x1] += amp[c_i] * kernel_single[:, x0:x1]
+                    if len(y_i) > 0:
+                        model[y_i, x_i] += amp[c_i] * kernel_single[y_i, x_i] * taper
     else:
         # If there is only a single set of amplitudes it is more efficient to multiply by amp in 1D
         model_img = np.sum((np.outer(amp * next(kernel_y_gen), next(kernel_x_gen)) for amp in amplitudes))
