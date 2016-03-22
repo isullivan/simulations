@@ -1,11 +1,11 @@
 """Function to generate simulated catalogs with reproduceable source spectra to feed into fast_dft."""
 from __future__ import print_function, division, absolute_import
 import numpy as np
-from numpy.fft import fft2, ifft2, fftshift
+from numpy.fft import rfft2, irfft2, fftshift
 from scipy import constants
 import lsst.afw.geom as afwGeom
 import lsst.afw.table as afwTable
-from lsst.sims.photUtils import Bandpass  # , Sed, PhotometricParameters
+from lsst.sims.photUtils import Bandpass, matchStar  # , Sed, PhotometricParameters
 from lsst.utils import getPackageDir
 # import galsim
 # from lsst.sims.photUtils import matchStar
@@ -16,11 +16,11 @@ import time
 photons_per_adu = 1e4  # used only to approximate the effect of photon shot noise, if photon_noise=True
 
 
-def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pad_image=1.0,
+def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pad_image=1.5,
               sky_noise=0.0, instrument_noise=0.0, photon_noise=False,
               dcr_flag=False, band_name='g', sed_list=None,
               astrometric_error=None, edge_dist=None, **kwargs):
-    """Wrapper that takes a catalog of stars and simulates an image."""
+    """!Wrapper that takes a catalog of stars and simulates an image."""
     """
     if psf is None:
         psf = galsim.Kolmogorov(fwhm=1)
@@ -49,12 +49,12 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
         fluxName = schema_entry.iterkeys().next()
     else:
         fluxName = name + '_flux'
-    """
+
     if sed_list is None:
         # Load in model SEDs
         matchStarObj = matchStar()
         sed_list = matchStarObj.loadKuruczSEDs()
-    """
+
     fluxKey = schema.find(fluxName).key
     temperatureKey = schema.find("temperature").key
     metalKey = schema.find("metallicity").key
@@ -152,7 +152,9 @@ def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_siz
     else:
         print("Time to model %i %sstars: [%0.3fs | %0.5fs per star]"
               % (n_star, bright_star, timing_model, timing_model / n_star))
-    convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
+    # The images are purely real, so we can save time by using the real FFT,
+    # which uses only half of the complex plane
+    convol = np.zeros((y_size_use, x_size_use // 2 + 1), dtype='complex64')
     dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale_use, **kwargs)
     timing_fft = -time.time()
     for _i, offset in enumerate(dcr_gen):
@@ -167,8 +169,8 @@ def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_siz
         if sky_noise > 0:
             source_image_use += (np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
                                  / np.sqrt(bandpass_nstep(bandpass)))
-        convol += fft2(source_image_use) * fft2(psf_image.array)
-    return_image = np.real(fftshift(ifft2(convol)))
+        convol += rfft2(source_image_use) * rfft2(psf_image.array)
+    return_image = np.real(fftshift(irfft2(convol)))
     timing_fft += time.time()
     print("FFT timing for %i DCR planes: [%0.3fs | %0.3fs per plane]"
           % (_i, timing_fft, timing_fft / _i))
@@ -214,8 +216,8 @@ def convolve_image(flux_arr, x_loc, y_loc, x_size=None, y_size=None,
     if sky_noise > 0:
         source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
     timing_fft = -time.time()
-    convol = fft2(source_image) * fft2(psf_image.array)
-    return_image = np.real(fftshift(ifft2(convol)))
+    convol = rfft2(source_image) * rfft2(psf_image.array)
+    return_image = np.real(fftshift(irfft2(convol)))
     timing_fft += time.time()
     print("FFT timing (single plane): [%0.3fs]" % (timing_fft))
     return(return_image[y0:y1:oversample_image, x0:x1:oversample_image] * oversample_image**2)
@@ -227,7 +229,7 @@ def bandpass_nstep(bandpass):
 
 
 def dcr_generator(bandpass, pixel_scale=None, elevation=None, azimuth=None, **kwargs):
-    """Call the functions that compute Differential Chromatic Refraction."""
+    """!Call the functions that compute Differential Chromatic Refraction (relative to mid-band)."""
     if elevation is None:
         elevation = 50.0
     if azimuth is None:
@@ -302,7 +304,7 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, edge_distance=10, 
 
 def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surface_gravity=1.0,
              flux=1.0, bandpass=None):
-    """Generate a randomized spectrum at a given temperature over a range of wavelengths."""
+    """!Generate a randomized spectrum at a given temperature over a range of wavelengths."""
     """
         Either use a supplied list of SEDs to be drawn from, or use a blackbody radiation model.
         The output is normalized to sum to the given flux.
@@ -312,6 +314,7 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
         """Simple wrapper to make the math more apparent."""
         return(np.sum(var for var in generator))
     if sed_list is None:
+        print("No sed_list supplied, using blackbody radiation spectra.")
         t_ref = [np.Inf, 0.0]
     else:
         temperature_list = [star.temp for star in sed_list]
@@ -320,6 +323,8 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
     bp_wavelen, bandpass_vals = bandpass.getBandpass()
     bandpass_gen = (bp for bp in bandpass_vals)
     bandpass_gen2 = (bp2 for bp2 in bandpass_vals)
+
+    # If the desired temperature is outside of the range of models in sed_list, then use a blackbody.
     if temperature >= t_ref[0] and temperature <= t_ref[1]:
         temp_weight = [np.abs(t / temperature - 1.0) for t in temperature_list]
         temp_thresh = np.min(temp_weight)
@@ -336,8 +341,7 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
             sed_i = t_inds[np.argmin(composite_weight)]
         else:
             sed_i = t_inds[0]
-        # sed = sed_list[sed_i]
-        # normalization = flux / sed_list[sed_i].calcFlux(bandpass)
+
         sed_integral = 0.0
 
         def sed_integrate(sed=sed_list[sed_i], wave_start=None, wave_end=None):
@@ -388,7 +392,7 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
 
 def load_bandpass(band_name='g', wavelength_step=None, use_mirror=True, use_lens=True, use_atmos=True,
                   use_filter=True, use_detector=True, **kwargs):
-    """Load in Bandpass object from sims_photUtils."""
+    """!Load in Bandpass object from sims_photUtils."""
     class BandpassMod(Bandpass):
         """Customize a few methods of the Bandpass class from sims_photUtils."""
 
@@ -450,7 +454,7 @@ def wavelength_iterator(bandpass, use_midpoint=False):
 
 
 def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star='M', **kwargs):
-    """Function that attempts to return a realistic distribution of stellar properties."""
+    """!Function that attempts to return a realistic distribution of stellar properties."""
     star_prob = [76.45, 12.1, 7.6, 3, 0.6, 0.13, 3E-5]
     luminosity_scale = [(0.01, 0.08), (0.08, 0.6), (0.6, 1.5), (1.5, 5.0), (5.0, 25.0), (25.0, 30000.0),
                         (30000.0, 50000.0)]  # hotter stars are brighter on average.
@@ -460,6 +464,7 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
     surface_gravity_range = [(0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.5, 2.0),
                              (1.0, 2.5), (2.0, 4.0), (3.0, 5.0)]
     star_type = {'M': 0, 'K': 1, 'G': 2, 'F': 3, 'A': 4, 'B': 5, 'O': 6}
+    star_names = sorted(star_type.keys(), key=lambda star: star_type[star])
     s_hot = star_type[hottest_star] + 1
     s_cool = star_type[coolest_star]
     n_star_type = s_hot - s_cool
@@ -479,11 +484,11 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
     luminosity = []
     metallicity = []
     surface_gravity = []
-    info_string = 'Number of stars of each type: ' + coolest_star
+    info_string = "Number of stars of each type:"
     for _i in range(n_star_type):
         inds = np.where((star_sort < star_prob[_i + 1]) * (star_sort > star_prob[_i]))
         inds = inds[0]  # np.where returns a tuple of two arrays
-        info_string += " " + str(len(inds))
+        info_string += " [" + star_names[_i] + " " + str(len(inds)) + "]"
         for ind in inds:
             temp_use = rand_gen.uniform(temperature_range[_i][0], temperature_range[_i][1])
             lum_use = rand_gen.uniform(luminosity_scale[_i][0], luminosity_scale[_i][1])
@@ -493,6 +498,5 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
             luminosity.append(lum_use)
             metallicity.append(metal_use)
             surface_gravity.append(grav_use)
-    info_string += " " + hottest_star
     print(info_string)
     return((temperature, luminosity, metallicity, surface_gravity))
