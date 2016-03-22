@@ -23,7 +23,7 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     """Wrapper that takes a catalog of stars and simulates an image."""
     """
     if psf is None:
-        psf = galsim.Kolmogorov(fwhm=3)
+        psf = galsim.Kolmogorov(fwhm=1)
     """
     # I think most PSF classes have a getFWHM method. The math converts to a sigma for a gaussian.
     fwhm_to_sigma = 1.0 / (2.0 * np.sqrt(2. * np.log(2)))

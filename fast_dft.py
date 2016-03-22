@@ -1,14 +1,35 @@
+"""
+A fast DFT approximation for arrays of amplitudes at floating-point locations.
+
+Returns a regularly spaced 2D array with the discrete Fourier transform of all the points.
+
+Points are gridded in image space by evaluating the sinc function, with no folding.
+
+If kernel_radius is set, the sinc function for each point is only evaluated for pixels within a
+radius of kernel_radius in pixels, and pixels within slices kernel_radius x M and N x kernel_radius
+for an MxN image.
+
+If amplitudes is a two dimensional array (m, n), it is interpreted as a 1D array of m points,
+each with n different amplitude values. In this case, a n element list of MxN images will be returned.
+
+Important note:
+"""
 from __future__ import division
 import numpy as np
 
 
-def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, kernel_radius=None, **kwargs):
-    """!A fast DFT approximation from floating-point locations to a regular 2D grid
-        that computes the sinc-interpolated values in image space.
+def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, kernel_radius=10, **kwargs):
+    """
+    !Construct a gridded 2D Fourier transform of an array of amplitudes at floating-point locations.
+    x_loc - 1D floating point array of x pixel coordinates.
+    y_loc - 1D floating point array of y pixel coordinates.
+    x_size - desired number of pixels N for the output (M, N) image.
+    y_size - desired number of pixels M for the output (M, N) image.
+    no_fft - if True, returns the sinc-interpolated image, otherwise takes the FFT [default: True]
+    kernel_radius - number of pixels to either side of each source to include [default: 10]
+    Accepts **kwargs so that these parameters can be passed through wrappers.
     """
     pi = np.pi
-    if kernel_radius is None:
-        kernel_radius = 10
 
     amplitudes = input_type_check(amplitudes)
     x_loc = input_type_check(x_loc)
@@ -22,12 +43,15 @@ def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, ke
 
     if y_size is None:
         y_size = x_size
+
+    # If the kernel radius is large, it is faster and more accurate to use all of the pixels.
     if pi * kernel_radius**2.0 >= x_size * y_size / 4.0:
         full_flag = True
     else:
         full_flag = False
 
     def kernel_1d(locs, size):
+        """A generalized generator function that pre-computes the 1D sinc function values along one axis."""
         pix = np.arange(size, dtype=np.float64)
         sign = np.power(-1.0, pix)
         for loc in locs:
@@ -45,6 +69,12 @@ def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, ke
 
     if multi_catalog:
         def kernel_circle_inds(x_loc, y_loc, kernel_radius=None):
+            """
+            A generator function that pre-computes the pixels to use for gridding.
+            Returns the x and y indices for all pixels within a given radius of a location,
+            that are NOT included in slices centered on that location.
+            Also applies a Hanning window function for those values, to reduce ringing at the edges.
+            """
             ind_radius = int(4 * kernel_radius)
             x_i0, y_i0 = np.meshgrid(np.arange(2.0 * ind_radius), np.arange(2.0 * ind_radius))
             x_pix_arr = np.round(x_loc)
@@ -103,6 +133,7 @@ def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, ke
                 y1 = y_c + kernel_radius
                 if y1 > y_size:
                     y1 = y_size
+                # central pixels will be added twice, so reduce their amplitude by half
                 kernel_single[y0:y1, x0:x1] = kernel_single[y0:y1, x0:x1] / 2.0
                 x_i = next(kernel_ind_gen)
                 y_i = next(kernel_ind_gen)
@@ -115,11 +146,18 @@ def fast_dft(amplitudes, x_loc, y_loc, x_size=None, y_size=None, no_fft=True, ke
     else:
         # If there is only a single set of amplitudes it is more efficient to multiply by amp in 1D
         model_img = np.sum((np.outer(amp * next(kernel_y_gen), next(kernel_x_gen)) for amp in amplitudes))
+
+    if not no_fft:
+        if multi_catalog:
+            for model in model_img:
+                model = np.fft.fft2(model)
+        else:
+            model_img = np.fft.fft2(model_img)
     return(model_img)
 
 
 def input_type_check(var):
-    """Ensure that the parameters are iterable."""
+    """Helper function to ensure that the parameters are iterable."""
     if not hasattr(var, '__iter__'):
         var = [var]
     if type(var) != np.ndarray:
