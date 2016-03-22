@@ -21,7 +21,6 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
               dcr_flag=False, band_name='g', sed_list=None,
               astrometric_error=None, edge_dist=None, **kwargs):
     """Wrapper that takes a catalog of stars and simulates an image."""
-
     """
     if psf is None:
         psf = galsim.Kolmogorov(fwhm=3)
@@ -93,7 +92,6 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     yv = catalog.getY() - y0
 
     if dcr_flag:
-        print("Number of DCR planes: ", bandpass_nstep(bandpass))
         faint_image = convolve_dcr_image(flux_arr, xv[i_faint], yv[i_faint],
                                          bandpass=bandpass, x_size=x_size, y_size=y_size,
                                          kernel_radius=kernel_radius,
@@ -126,6 +124,7 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
 def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_size=None,
                        psf=None, pad_image=1.5, pixel_scale=None, kernel_radius=None,
                        oversample_image=1, photon_noise=False, sky_noise=0.0, **kwargs):
+    """Wrapper to call fast_dft with multiple DCR planes."""
     x_size_use = int(x_size * pad_image)
     y_size_use = int(y_size * pad_image)
     oversample_image = int(oversample_image)
@@ -138,10 +137,24 @@ def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_siz
     y_loc_use = y_loc * oversample_image + y0
     x_size_use *= oversample_image
     y_size_use *= oversample_image
+    timing_model = -time.time()
     source_image = fast_dft(flux_arr, x_loc_use, y_loc_use, x_size=x_size_use, y_size=y_size_use,
                             kernel_radius=kernel_radius, **kwargs)
+    timing_model += time.time()
+    n_star = len(x_loc)
+    if oversample_image > 1:
+        bright_star = "bright "
+    else:
+        bright_star = ""
+    if n_star == 1:
+        print("Time to model %i %sstar: [%0.3fs]"
+              % (n_star, bright_star, timing_model))
+    else:
+        print("Time to model %i %sstars: [%0.3fs | %0.5fs per star]"
+              % (n_star, bright_star, timing_model, timing_model / n_star))
     convol = np.zeros((y_size_use, x_size_use), dtype='complex64')
     dcr_gen = dcr_generator(bandpass, pixel_scale=pixel_scale_use, **kwargs)
+    timing_fft = -time.time()
     for _i, offset in enumerate(dcr_gen):
         source_image_use = source_image[_i]
 
@@ -156,12 +169,16 @@ def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_siz
                                  / np.sqrt(bandpass_nstep(bandpass)))
         convol += fft2(source_image_use) * fft2(psf_image.array)
     return_image = np.real(fftshift(ifft2(convol)))
+    timing_fft += time.time()
+    print("FFT timing for %i DCR planes: [%0.3fs | %0.3fs per plane]"
+          % (_i, timing_fft, timing_fft / _i))
     return(return_image[y0:y1:oversample_image, x0:x1:oversample_image] * oversample_image**2)
 
 
 def convolve_image(flux_arr, x_loc, y_loc, x_size=None, y_size=None,
                    psf=None, pad_image=1.5, pixel_scale=None, kernel_radius=None,
                    oversample_image=1, photon_noise=False, sky_noise=0.0, **kwargs):
+    """Wrapper to call fast_dft with no DCR planes."""
     x_size_use = int(x_size * pad_image)
     y_size_use = int(y_size * pad_image)
     oversample_image = int(oversample_image)
@@ -174,8 +191,20 @@ def convolve_image(flux_arr, x_loc, y_loc, x_size=None, y_size=None,
     y_loc_use = y_loc * oversample_image + y0
     x_size_use *= oversample_image
     y_size_use *= oversample_image
+    timing_model = -time.time()
     source_image = fast_dft(flux_arr, x_loc_use, y_loc_use, x_size=x_size_use, y_size=y_size_use,
                             kernel_radius=kernel_radius, **kwargs)
+    timing_model += time.time()
+    n_star = len(x_loc)
+    if oversample_image > 1:
+        bright_star = "bright "
+    else:
+        bright_star = ""
+    if n_star == 1:
+        print("Time to model %i %sstar: [%0.3fs]" % (n_star, bright_star, timing_model))
+    else:
+        print("Time to model %i %sstars: [%0.3fs | %0.5fs per star]"
+              % (n_star, bright_star, timing_model, timing_model / n_star))
     psf_image = psf.drawImage(scale=pixel_scale_use, method='fft', offset=[0, 0],
                               nx=x_size_use, ny=y_size_use, use_true_center=False)
     if photon_noise:
@@ -184,8 +213,11 @@ def convolve_image(flux_arr, x_loc, y_loc, x_size=None, y_size=None,
         source_image += base_noise
     if sky_noise > 0:
         source_image += np.random.normal(scale=sky_noise, size=(y_size_use, x_size_use))
+    timing_fft = -time.time()
     convol = fft2(source_image) * fft2(psf_image.array)
     return_image = np.real(fftshift(ifft2(convol)))
+    timing_fft += time.time()
+    print("FFT timing (single plane): [%0.3fs]" % (timing_fft))
     return(return_image[y0:y1:oversample_image, x0:x1:oversample_image] * oversample_image**2)
 
 
