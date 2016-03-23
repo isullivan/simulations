@@ -123,7 +123,7 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
 
 def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_size=None,
                        psf=None, pad_image=1.5, pixel_scale=None, kernel_radius=None,
-                       oversample_image=1, photon_noise=False, sky_noise=0.0, **kwargs):
+                       oversample_image=1, photon_noise=False, sky_noise=0.0, verbose=True, **kwargs):
     """Wrapper to call fast_dft with multiple DCR planes."""
     x_size_use = int(x_size * pad_image)
     y_size_use = int(y_size * pad_image)
@@ -146,12 +146,13 @@ def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_siz
         bright_star = "bright "
     else:
         bright_star = ""
-    if n_star == 1:
-        print("Time to model %i %sstar: [%0.3fs]"
-              % (n_star, bright_star, timing_model))
-    else:
-        print("Time to model %i %sstars: [%0.3fs | %0.5fs per star]"
-              % (n_star, bright_star, timing_model, timing_model / n_star))
+    if verbose:
+        if n_star == 1:
+            print("Time to model %i %sstar: [%0.3fs]"
+                  % (n_star, bright_star, timing_model))
+        else:
+            print("Time to model %i %sstars: [%0.3fs | %0.5fs per star]"
+                  % (n_star, bright_star, timing_model, timing_model / n_star))
     # The images are purely real, so we can save time by using the real FFT,
     # which uses only half of the complex plane
     convol = np.zeros((y_size_use, x_size_use // 2 + 1), dtype='complex64')
@@ -172,8 +173,9 @@ def convolve_dcr_image(flux_arr, x_loc, y_loc, bandpass=None, x_size=None, y_siz
         convol += rfft2(source_image_use) * rfft2(psf_image.array)
     return_image = np.real(fftshift(irfft2(convol)))
     timing_fft += time.time()
-    print("FFT timing for %i DCR planes: [%0.3fs | %0.3fs per plane]"
-          % (_i, timing_fft, timing_fft / _i))
+    if verbose:
+        print("FFT timing for %i DCR planes: [%0.3fs | %0.3fs per plane]"
+              % (_i, timing_fft, timing_fft / _i))
     return(return_image[y0:y1:oversample_image, x0:x1:oversample_image] * oversample_image**2)
 
 
@@ -271,7 +273,7 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, edge_distance=10, 
     x0, y0 = bbox.getBegin()
     star_properties = stellar_distribution(seed=seed, n_star=n_star, **kwargs)
     temperature = star_properties[0]
-    luminosity = star_properties[1]
+    flux = star_properties[1]
     metallicity = star_properties[2]
     surface_gravity = star_properties[3]
     rand_gen = np.random
@@ -279,7 +281,6 @@ def cat_sim(bbox=None, seed=None, n_star=None, n_galaxy=None, edge_distance=10, 
         rand_gen.seed(seed + 1)  # ensure that we use a different seed than stellar_distribution.
     x = rand_gen.uniform(x0 + edge_distance, x0 + x_size - edge_distance, n_star)
     y = rand_gen.uniform(y0 + edge_distance, y0 + y_size - edge_distance, n_star)
-    flux = luminosity * np.abs(np.random.normal(scale=1e4, size=n_star) / 100.)
 
     catalog = afwTable.SourceCatalog(schema)
     fluxKey = schema.find(fluxName).key
@@ -310,6 +311,12 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
         The output is normalized to sum to the given flux.
         [future] If a seed is supplied, noise can be added to the final spectrum before normalization.
     """
+    flux_to_jansky = 1.0e26
+    f0 = constants.speed_of_light / (bandpass.wavelen_min * 1.0e-9)
+    f1 = constants.speed_of_light / (bandpass.wavelen_max * 1.0e-9)
+    f_cen = constants.speed_of_light / (bandpass.calc_eff_wavelen() * 1.0e-9)
+    bandwidth_hz = f_cen * 2.0 * (f0 - f1) / (f0 + f1)
+
     def integral(generator):
         """Simple wrapper to make the math more apparent."""
         return(np.sum(var for var in generator))
@@ -342,19 +349,25 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
         else:
             sed_i = t_inds[0]
 
-        sed_integral = 0.0
-
         def sed_integrate(sed=sed_list[sed_i], wave_start=None, wave_end=None):
             wavelengths = sed.wavelen
             flambdas = sed.flambda
             return(integral((flambdas[_i] for _i in range(len(flambdas))
                    if wavelengths[_i] >= wave_start and wavelengths[_i] < wave_end)))
 
+        # integral over the full sed, to convert from W/m**2 to W/m**2/Hz
+        sed_integral = sed_integrate(wave_end=np.Inf)
+        flux_band_fraction = sed_integrate(wave_start=bandpass.wavelen_min, wave_end=bandpass.wavelen_max)
+        flux_band_fraction /= sed_integral
+        # integral over the full bandpass, to convert back to astrophysical quantities
+        sed_band_integral = 0.0
+
         for wave_start, wave_end in wavelength_iterator(bandpass):
-            sed_integral += next(bandpass_gen2) * sed_integrate(wave_start=wave_start, wave_end=wave_end)
-        flux_norm = flux / sed_integral
+            sed_band_integral += next(bandpass_gen2) * sed_integrate(wave_start=wave_start, wave_end=wave_end)
+        flux_band_norm = flux_to_jansky * flux * flux_band_fraction / bandwidth_hz / sed_band_integral
         for wave_start, wave_end in wavelength_iterator(bandpass):
-            yield(flux_norm * next(bandpass_gen) * sed_integrate(wave_start=wave_start, wave_end=wave_end))
+            yield(flux_band_norm * next(bandpass_gen)
+                  * sed_integrate(wave_start=wave_start, wave_end=wave_end))
 
     else:
         h = constants.Planck
@@ -453,16 +466,27 @@ def wavelength_iterator(bandpass, use_midpoint=False):
         wave_start = wave_end
 
 
-def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star='M', **kwargs):
-    """!Function that attempts to return a realistic distribution of stellar properties."""
+def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star='M', verbose=True, **kwargs):
+    """!Function that attempts to return a realistic distribution of stellar properties.
+    Returns temperature, flux, metallicity, surface gravity
+    temperature in units Kelvin
+    flux in units W/m**2
+    metallicity is logarithmic metallicity relative to solar
+    surface gravity relative to solar
+    """
     star_prob = [76.45, 12.1, 7.6, 3, 0.6, 0.13, 3E-5]
-    luminosity_scale = [(0.01, 0.08), (0.08, 0.6), (0.6, 1.5), (1.5, 5.0), (5.0, 25.0), (25.0, 30000.0),
-                        (30000.0, 50000.0)]  # hotter stars are brighter on average.
+    # Relative to Solar luminosity. Hotter stars are brighter on average.
+    luminosity_scale = [(0.01, 0.08), (0.08, 0.6), (0.6, 1.5), (1.5, 5.0), (5.0, 100.0), (100.0, 30000.0),
+                        (30000.0, 50000.0)]
     temperature_range = [(2400, 3700), (3700, 5200), (5200, 6000), (6000, 7500), (7500, 10000),
-                         (10000, 30000), (30000, 50000)]
+                         (10000, 30000), (30000, 50000)]  # in degrees Kelvin
     metallicity_range = [(-3.0, 0.5)] * len(star_prob)  # Assign a random log metallicity to each star.
     surface_gravity_range = [(0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.5, 2.0),
                              (1.0, 2.5), (2.0, 4.0), (3.0, 5.0)]
+    lum_solar = 3.846e26  # Solar luminosity, in Watts
+    ly = 9.4607e15  # one light year, in meters
+    pi = np.pi
+    luminosity_to_flux = lum_solar / (4.0 * pi * ly**2.0)
     star_type = {'M': 0, 'K': 1, 'G': 2, 'F': 3, 'A': 4, 'B': 5, 'O': 6}
     star_names = sorted(star_type.keys(), key=lambda star: star_type[star])
     s_hot = star_type[hottest_star] + 1
@@ -480,23 +504,44 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
     if seed is not None:
         rand_gen.seed(seed)
     star_sort = rand_gen.uniform(0, max_prob, n_star)
+    star_sort[0] = 99.5  # type A
     temperature = []
-    luminosity = []
+    flux = []
     metallicity = []
     surface_gravity = []
-    info_string = "Number of stars of each type:"
+    n_star = []
+    flux_star = []
     for _i in range(n_star_type):
         inds = np.where((star_sort < star_prob[_i + 1]) * (star_sort > star_prob[_i]))
         inds = inds[0]  # np.where returns a tuple of two arrays
-        info_string += " [" + star_names[_i] + " " + str(len(inds)) + "]"
+        n_star.append(len(inds))
+        flux_stars_total = 0.0
         for ind in inds:
             temp_use = rand_gen.uniform(temperature_range[_i][0], temperature_range[_i][1])
             lum_use = rand_gen.uniform(luminosity_scale[_i][0], luminosity_scale[_i][1])
+            # Assume that all stars are randomly distributed between 1 and 100 light years away
+            distance_attenuation = rand_gen.uniform(1.0, 100.0) ** 2.0
+            flux_use = lum_use * luminosity_to_flux / distance_attenuation
             metal_use = rand_gen.uniform(metallicity_range[_i][0], metallicity_range[_i][1])
             grav_use = rand_gen.uniform(surface_gravity_range[_i][0], surface_gravity_range[_i][1])
+            if ind ==0:
+                flux_use = 40.1 * luminosity_to_flux / 25.05**2
+                temp_use = 9602
+                metal_use = -0.5
+                grav_use = 4.1
+                print("Inserting Vega flux: ",flux_use)
             temperature.append(temp_use)
-            luminosity.append(lum_use)
+            flux.append(flux_use)
             metallicity.append(metal_use)
             surface_gravity.append(grav_use)
-    print(info_string)
-    return((temperature, luminosity, metallicity, surface_gravity))
+            flux_stars_total += flux_use
+        flux_star.append(flux_stars_total)
+    flux_total = np.sum(flux_star)
+    flux_star = [100. * _f / flux_total for _f in flux_star]
+    info_string = "Number and flux contribution of stars of each type:\n"
+    for _i in range(n_star_type):
+        info_string += str(" [%s %i| %0.2f%%]" % (star_names[_i], n_star[_i], flux_star[_i]))
+    if verbose:
+        print(info_string)
+
+    return((temperature, flux, metallicity, surface_gravity))
