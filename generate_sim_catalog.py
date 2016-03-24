@@ -519,7 +519,6 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
     if seed is not None:
         rand_gen.seed(seed)
     star_sort = rand_gen.uniform(0, max_prob, n_star)
-    star_sort[0] = 99.5  # type A
     temperature = []
     flux = []
     metallicity = []
