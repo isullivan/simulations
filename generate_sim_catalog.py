@@ -20,7 +20,7 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
               sky_noise=0.0, instrument_noise=0.0, photon_noise=False,
               dcr_flag=False, band_name='g', sed_list=None,
               astrometric_error=None, edge_dist=None, **kwargs):
-    """!Wrapper that takes a catalog of stars and simulates an image."""
+    """!Wrapper that takes a catalog of stars and simulates an image in units of Janskys."""
     """
     if psf is None:
         psf = galsim.Kolmogorov(fwhm=1)
@@ -76,10 +76,17 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
                                  metallicity=z_star, surface_gravity=g_star)
         flux_arr[_i, :] = np.array([flux_val for flux_val in star_spectrum])
     flux_tot = np.sum(flux_arr, axis=1)
-    cat_sigma = np.std(flux_tot[flux_tot - np.median(flux_tot) < 3.0 * np.std(flux_tot)])
-    i_bright = (np.where(flux_tot - np.median(flux_tot) > 3.0 * cat_sigma))[0]
-    n_bright = len(i_bright)
-    i_faint = (np.where(flux_tot - np.median(flux_tot) <= 3.0 * cat_sigma))[0]
+    if n_star > 3:
+        cat_sigma = np.std(flux_tot[flux_tot - np.median(flux_tot) < 3.0 * np.std(flux_tot)])
+        i_bright = (np.where(flux_tot - np.median(flux_tot) > 3.0 * cat_sigma))[0]
+        n_bright = len(i_bright)
+        i_faint = (np.where(flux_tot - np.median(flux_tot) <= 3.0 * cat_sigma))[0]
+        n_faint = len(i_faint)
+    else:
+        i_bright = np.arange(n_star)
+        i_faint = np.arange(0)
+        n_bright = n_star
+        n_faint = 0
     if not dcr_flag:
         flux_arr = flux_tot
         flux_bright = flux_arr[i_bright]
@@ -91,31 +98,33 @@ def cat_image(catalog=None, bbox=None, name=None, psf=None, pixel_scale=None, pa
     xv = catalog.getX() - x0
     yv = catalog.getY() - y0
 
+    return_image = np.zeros((y_size, x_size))
     if dcr_flag:
-        faint_image = convolve_dcr_image(flux_arr, xv[i_faint], yv[i_faint],
-                                         bandpass=bandpass, x_size=x_size, y_size=y_size,
-                                         kernel_radius=kernel_radius,
-                                         psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
-                                         photon_noise=photon_noise, sky_noise=sky_noise, **kwargs)
+        if n_faint > 0:
+            return_image += convolve_dcr_image(flux_arr, xv[i_faint], yv[i_faint],
+                                               bandpass=bandpass, x_size=x_size, y_size=y_size,
+                                               kernel_radius=kernel_radius,
+                                               psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                               photon_noise=photon_noise, sky_noise=sky_noise, **kwargs)
         if n_bright > 0:
-            bright_image = convolve_dcr_image(flux_bright, xv[i_bright], yv[i_bright],
-                                              bandpass=bandpass, x_size=x_size, y_size=y_size,
-                                              kernel_radius=x_size, oversample_image=2.0,
-                                              psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
-                                              photon_noise=photon_noise, sky_noise=0.0, **kwargs)
+            return_image += convolve_dcr_image(flux_bright, xv[i_bright], yv[i_bright],
+                                               bandpass=bandpass, x_size=x_size, y_size=y_size,
+                                               kernel_radius=x_size, oversample_image=2.0,
+                                               psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                               photon_noise=photon_noise, sky_noise=0.0, **kwargs)
 
     else:
-        faint_image = convolve_image(flux_arr, xv[i_faint], yv[i_faint],
-                                     x_size=x_size, y_size=y_size, kernel_radius=kernel_radius,
-                                     psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
-                                     photon_noise=photon_noise, sky_noise=sky_noise, **kwargs)
+        if n_faint > 0:
+            return_image += convolve_image(flux_arr, xv[i_faint], yv[i_faint],
+                                           x_size=x_size, y_size=y_size, kernel_radius=kernel_radius,
+                                           psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                           photon_noise=photon_noise, sky_noise=sky_noise, **kwargs)
         if n_bright > 0:
-            bright_image = convolve_image(flux_bright, xv[i_bright], yv[i_bright],
-                                          x_size=x_size, y_size=y_size,
-                                          kernel_radius=x_size, oversample_image=2.0,
-                                          psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
-                                          photon_noise=photon_noise, sky_noise=0.0, **kwargs)
-    return_image = bright_image + faint_image
+            return_image += convolve_image(flux_bright, xv[i_bright], yv[i_bright],
+                                           x_size=x_size, y_size=y_size,
+                                           kernel_radius=x_size, oversample_image=2.0,
+                                           psf=psf, pad_image=pad_image, pixel_scale=pixel_scale,
+                                           photon_noise=photon_noise, sky_noise=0.0, **kwargs)
     if instrument_noise > 0:
         return_image += np.random.normal(scale=instrument_noise, size=(y_size, x_size))
     return(return_image)
@@ -356,18 +365,19 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
                    if wavelengths[_i] >= wave_start and wavelengths[_i] < wave_end)))
 
         # integral over the full sed, to convert from W/m**2 to W/m**2/Hz
-        sed_integral = sed_integrate(wave_end=np.Inf)
+        sed_full_integral = sed_integrate(wave_end=np.Inf)
         flux_band_fraction = sed_integrate(wave_start=bandpass.wavelen_min, wave_end=bandpass.wavelen_max)
-        flux_band_fraction /= sed_integral
+        flux_band_fraction /= sed_full_integral
+
         # integral over the full bandpass, to convert back to astrophysical quantities
         sed_band_integral = 0.0
-
         for wave_start, wave_end in wavelength_iterator(bandpass):
             sed_band_integral += next(bandpass_gen2) * sed_integrate(wave_start=wave_start, wave_end=wave_end)
-        flux_band_norm = flux_to_jansky * flux * flux_band_fraction / bandwidth_hz / sed_band_integral
+        flux_band_norm = flux_to_jansky * flux * flux_band_fraction / bandwidth_hz
+
         for wave_start, wave_end in wavelength_iterator(bandpass):
             yield(flux_band_norm * next(bandpass_gen)
-                  * sed_integrate(wave_start=wave_start, wave_end=wave_end))
+                  * sed_integrate(wave_start=wave_start, wave_end=wave_end) / sed_band_integral)
 
     else:
         h = constants.Planck
@@ -382,25 +392,30 @@ def star_gen(sed_list=None, seed=None, temperature=5600, metallicity=0.0, surfac
                 exp_term = np.exp(-n * x)
                 yield(poly_term * exp_term)
 
-        def radiance_calc(temperature, wavelength_start, wavelength_end, norm=1.0, nterms=3):
+        def radiance_calc(wavelength_start, wavelength_end, temperature=temperature, nterms=3):
             nu1 = c / (wavelength_start / 1E9)
             nu2 = c / (wavelength_end / 1E9)
             x1 = h * nu1 / (kb * temperature)
             x2 = h * nu2 / (kb * temperature)
             radiance1 = radiance_expansion(x1, nterms)
             radiance2 = radiance_expansion(x2, nterms)
-            radiance_integral1 = norm * prefactor * integral(radiance1)
-            radiance_integral2 = norm * prefactor * integral(radiance2)
+            radiance_integral1 = prefactor * integral(radiance1)
+            radiance_integral2 = prefactor * integral(radiance2)
             return(radiance_integral1 - radiance_integral2)
 
-        radiance_integral = 0.0
+        # integral over the full sed, to convert from W/m**2 to W/m**2/Hz
+        radiance_full_integral = radiance_calc(bandpass.wavelen_min / 100.0, bandpass.wavelen_max * 100.0)
+        flux_band_fraction = radiance_calc(bandpass.wavelen_min, bandpass.wavelen_max)
+        flux_band_fraction /= radiance_full_integral
+
+        radiance_band_integral = 0.0
         for wave_start, wave_end in wavelength_iterator(bandpass):
-            radiance_integral += radiance_calc(temperature, wave_start, wave_end, norm=bandpass_gen2.next())
-        flux_norm = flux / radiance_integral
-        # flux_norm = flux / radiance_calc(temperature, bandpass.wavelen_min, bandpass.wavelen_max,
-        #                                 norm=np.mean(bandpass_vals))
+            radiance_band_integral += next(bandpass_gen2) * radiance_calc(wave_start, wave_end)
+        flux_band_norm = flux_to_jansky * flux * flux_band_fraction / bandwidth_hz
+
         for wave_start, wave_end in wavelength_iterator(bandpass):
-            yield(flux_norm * radiance_calc(temperature, wave_start, wave_end, norm=bandpass_gen.next()))
+            yield(flux_band_norm * next(bandpass_gen)
+                  * radiance_calc(wave_start, wave_end) / radiance_band_integral)
 
 
 def load_bandpass(band_name='g', wavelength_step=None, use_mirror=True, use_lens=True, use_atmos=True,
@@ -524,12 +539,6 @@ def stellar_distribution(seed=None, n_star=None, hottest_star='A', coolest_star=
             flux_use = lum_use * luminosity_to_flux / distance_attenuation
             metal_use = rand_gen.uniform(metallicity_range[_i][0], metallicity_range[_i][1])
             grav_use = rand_gen.uniform(surface_gravity_range[_i][0], surface_gravity_range[_i][1])
-            if ind ==0:
-                flux_use = 40.1 * luminosity_to_flux / 25.05**2
-                temp_use = 9602
-                metal_use = -0.5
-                grav_use = 4.1
-                print("Inserting Vega flux: ",flux_use)
             temperature.append(temp_use)
             flux.append(flux_use)
             metallicity.append(metal_use)
